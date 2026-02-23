@@ -14,9 +14,12 @@ dependencies = [
     "langchain-core>=1.2.7",
     "langgraph>=1.0.7",
     "numpy>=2.4.2",
+    "openai-whisper>=20231117",
+    "pyannote.audio>=3.1.1",
     "pydantic>=2.12.5",
     "sentence-transformers>=5.2.2",
     "tqdm>=4.67.2",
     "transformers>=5.0.0",
     "uvicorn>=0.40.0",
+    "whisper>=1.1.10",
 ]

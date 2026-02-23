@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Intelligence Platform - Video Upload</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 25px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #f8f9ff;
+        }
+        
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+        
+        .upload-area.drag-over {
+            border-color: #764ba2;
+            background: #e8ebff;
+        }
+        
+        .upload-icon {
+            font-size: 40px;
+            margin-bottom: 10px;
+        }
+        
+        .upload-text {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 5px;
+        }
+        
+        .upload-hint {
+            color: #999;
+            font-size: 12px;
+        }
+        
+        input[type="file"] {
+            display: none;
+        }
+        
+        input[type="text"],
+        select {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+        
+        input[type="text"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+        }
+        
+        input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-upload {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-upload:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-upload:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .btn-clear {
+            background: #f0f0f0;
+            color: #333;
+        }
+        
+        .btn-clear:hover {
+            background: #e0e0e0;
+        }
+        
+        .status {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .status.show {
+            display: block;
+        }
+        
+        .status.loading {
+            background: #e8f4fd;
+            color: #0066cc;
+            border: 1px solid #b3d9ff;
+        }
+        
+        .status.success {
+            background: #e6f9f0;
+            color: #00704d;
+            border: 1px solid #99e6d0;
+        }
+        
+        .status.error {
+            background: #ffe6e6;
+            color: #cc0000;
+            border: 1px solid #ff9999;
+        }
+        
+        .status-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .file-name {
+            color: #667eea;
+            font-weight: 500;
+            word-break: break-all;
+        }
+        
+        .transcript-preview {
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.05);
+            border-radius: 6px;
+            font-size: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Meeting Intelligence</h1>
+        <p class="subtitle">Upload a video to extract audio and generate transcripts</p>
+        
+        <form id="uploadForm">
+            <!-- File Upload -->
+            <div class="form-group">
+                <label>Video File</label>
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">📹</div>
+                    <div class="upload-text">Click to upload or drag and drop</div>
+                    <div class="upload-hint">MP4, MOV, AVI, MKV (Max 500MB)</div>
+                    <input type="file" id="fileInput" accept="video/*">
+                </div>
+                <div id="fileName" style="margin-top: 10px; color: #667eea; font-weight: 500;"></div>
+            </div>
+            
+            <!-- Whisper Model -->
+            <div class="form-group">
+                <label for="model">Whisper Model</label>
+                <select id="model" name="model">
+                    <option value="tiny">Tiny (Fastest, less accurate)</option>
+                    <option value="base" selected>Base (Recommended)</option>
+                    <option value="small">Small (Slower, more accurate)</option>
+                    <option value="medium">Medium (Very slow, very accurate)</option>
+                    <option value="large">Large (Slowest, most accurate)</option>
+                </select>
+            </div>
+            
+            <!-- Diarization -->
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="diarize" name="diarize">
+                    <label for="diarize" style="margin-bottom: 0;">Enable Speaker Diarization (who said what)</label>
+                </div>
+            </div>
+            
+            <!-- HuggingFace Token -->
+            <div class="form-group" id="tokenGroup" style="display: none;">
+                <label for="token">HuggingFace Token</label>
+                <input type="text" id="token" name="token" placeholder="hf_xxxxxxxxxxxxx" >
+                <div class="upload-hint">Get token from: https://huggingface.co/settings/tokens</div>
+            </div>
+            
+            <!-- Buttons -->
+            <div class="button-group">
+                <button type="submit" class="btn-upload" id="uploadBtn">Upload & Process</button>
+                <button type="button" class="btn-clear" onclick="resetForm()">Clear</button>
+            </div>
+        </form>
+        
+        <!-- Status -->
+        <div class="status" id="status"></div>
+    </div>
+    
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileName = document.getElementById('fileName');
+        const uploadForm = document.getElementById('uploadForm');
+        const statusDiv = document.getElementById('status');
+        const diarizeCheckbox = document.getElementById('diarize');
+        const tokenGroup = document.getElementById('tokenGroup');
+        
+        const API_URL = 'http://localhost:8000';
+        
+        // Drag and drop
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('drag-over');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('drag-over');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('drag-over');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                updateFileName();
+            }
+        });
+        
+        fileInput.addEventListener('change', updateFileName);
+        diarizeCheckbox.addEventListener('change', () => {
+            tokenGroup.style.display = diarizeCheckbox.checked ? 'block' : 'none';
+        });
+        
+        function updateFileName() {
+            if (fileInput.files.length > 0) {
+                fileName.textContent = '✓ ' + fileInput.files[0].name;
+            }
+        }
+        
+        function showStatus(message, type = 'loading') {
+            statusDiv.className = `status show ${type}`;
+            statusDiv.innerHTML = `
+                <div class="status-title">
+                    ${type === 'loading' ? '<span class="spinner"></span>' : ''}
+                    ${type === 'success' ? '✓' : type === 'error' ? '✗' : ''} ${message}
+                </div>
+            `;
+        }
+        
+        function showError(message) {
+            showStatus(message, 'error');
+        }
+        
+        async function uploadFile(file, model, diarize, token) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('whisper_model', model);
+            formData.append('enable_diarization', diarize);
+            if (diarize && token) {
+                formData.append('huggingface_token', token);
+            }
+            
+            try {
+                showStatus('Uploading video and processing...');
+                
+                const response = await fetch(`${API_URL}/api/v1/videos/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Upload failed');
+                }
+                
+                const result = await response.json();
+                
+                if (result.status === 'completed') {
+                    showStatus('✓ Processing complete!', 'success');
+                    
+                    const transcript = result.transcript;
+                    const speakers = Object.keys(transcript.speakers || {});
+                    const speakerInfo = speakers.length > 0 
+                        ? `<br>Speakers: ${speakers.join(', ')}`
+                        : '';
+                    
+                    const preview = transcript.text.substring(0, 200) + (transcript.text.length > 200 ? '...' : '');
+                    
+                    statusDiv.innerHTML += `
+                        <div style="margin-top: 15px;">
+                            <p><strong>Job ID:</strong> ${result.job_id}</p>
+                            <p><strong>Language:</strong> ${transcript.language}</p>
+                            ${speakerInfo}
+                            <div class="transcript-preview">${preview}</div>
+                        </div>
+                    `;
+                } else if (result.status === 'failed') {
+                    throw new Error(result.error || 'Processing failed');
+                } else {
+                    showStatus(`Status: ${result.status}`, 'loading');
+                }
+                
+            } catch (error) {
+                showError(error.message || 'An error occurred');
+            }
+        }
+        
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (fileInput.files.length === 0) {
+                showError('Please select a video file');
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const model = document.getElementById('model').value;
+            const diarize = diarizeCheckbox.checked;
+            const token = diarizeCheckbox.checked ? document.getElementById('token').value : '';
+            
+            if (diarize && !token) {
+                showError('Please enter HuggingFace token for diarization');
+                return;
+            }
+            
+            document.getElementById('uploadBtn').disabled = true;
+            await uploadFile(file, model, diarize, token);
+            document.getElementById('uploadBtn').disabled = false;
+        });
+        
+        function resetForm() {
+            uploadForm.reset();
+            fileName.textContent = '';
+            statusDiv.className = 'status';
+            tokenGroup.style.display = 'none';
+        }
+        
+        // Check API connectivity
+        window.addEventListener('load', async () => {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                if (!response.ok) throw new Error();
+            } catch {
+                showError(`Cannot connect to API at ${API_URL}. Is the server running?`);
+            }
+        });
+    </script>
+</body>
+</html>
