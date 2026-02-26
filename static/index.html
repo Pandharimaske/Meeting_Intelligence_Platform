@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Meeting Intelligence Platform</title>
+<style>
+  :root {
+    --bg:       #0f1117;
+    --surface:  #1a1d27;
+    --border:   #2a2d3e;
+    --accent:   #6c63ff;
+    --accent2:  #a78bfa;
+    --success:  #22c55e;
+    --warning:  #f59e0b;
+    --error:    #ef4444;
+    --text:     #e2e8f0;
+    --muted:    #64748b;
+    --radius:   12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+
+  /* ── Layout ── */
+  .app { display: grid; grid-template-columns: 340px 1fr; height: 100vh; overflow: hidden; }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .main { display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  .sidebar-header { padding: 20px; border-bottom: 1px solid var(--border); }
+  .logo { font-size: 16px; font-weight: 700; color: var(--accent2); letter-spacing: -0.3px; }
+  .logo span { color: var(--muted); font-weight: 400; }
+
+  /* Upload zone */
+  .upload-zone {
+    margin: 16px; border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 24px 16px; text-align: center; cursor: pointer; transition: all .2s;
+    position: relative;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--accent); background: rgba(108,99,255,.06); }
+  .upload-zone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+  .upload-icon { font-size: 28px; margin-bottom: 8px; }
+  .upload-zone p { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .upload-zone strong { color: var(--text); }
+  .upload-btn {
+    margin-top: 12px; width: 100%; padding: 10px; background: var(--accent);
+    color: #fff; border: none; border-radius: 8px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: opacity .2s;
+  }
+  .upload-btn:hover { opacity: .85; }
+  .upload-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* Progress bar */
+  .progress-bar { height: 3px; background: var(--border); border-radius: 99px; margin: 0 16px; overflow: hidden; display: none; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; transition: width .4s ease; }
+
+  /* Jobs list */
+  .jobs-label { padding: 12px 16px 6px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+  .jobs-list { flex: 1; overflow-y: auto; padding: 0 8px 16px; }
+  .job-card {
+    padding: 12px; border-radius: 10px; cursor: pointer; margin-bottom: 4px;
+    border: 1px solid transparent; transition: all .15s;
+  }
+  .job-card:hover { background: rgba(255,255,255,.04); }
+  .job-card.active { background: rgba(108,99,255,.12); border-color: rgba(108,99,255,.3); }
+  .job-card-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .job-card-meta { font-size: 11px; color: var(--muted); margin-top: 3px; display: flex; align-items: center; gap: 6px; }
+  .badge { padding: 2px 7px; border-radius: 99px; font-size: 10px; font-weight: 600; }
+  .badge-processing { background: rgba(245,158,11,.15); color: var(--warning); }
+  .badge-completed  { background: rgba(34,197,94,.15);  color: var(--success); }
+  .badge-failed     { background: rgba(239,68,68,.15);  color: var(--error); }
+  .badge-uploaded   { background: rgba(100,116,139,.15); color: var(--muted); }
+
+  /* ── Main panel ── */
+  .main-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--muted); }
+  .main-empty .big-icon { font-size: 56px; opacity: .3; }
+
+  /* Tabs */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); padding: 0 20px; background: var(--surface); flex-shrink: 0; }
+  .tab { padding: 14px 16px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
+
+  /* Job header */
+  .job-header { padding: 16px 20px 12px; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+  .job-header-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .job-header-meta { font-size: 12px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+
+  /* Step progress */
+  .steps { padding: 16px 20px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
+  .step { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .step.done { color: var(--success); }
+  .step.active { color: var(--accent2); }
+  .step-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .step-arrow { color: var(--border); font-size: 10px; }
+
+  /* Tab content */
+  .tab-content { flex: 1; overflow-y: auto; padding: 20px; display: none; }
+  .tab-content.active { display: block; }
+
+  /* Transcript */
+  .transcript-text { font-size: 13px; line-height: 1.8; color: var(--text); white-space: pre-wrap; }
+  .seg { display: inline; }
+  .seg:hover { background: rgba(108,99,255,.15); border-radius: 3px; cursor: default; }
+  .timestamp { font-size: 11px; color: var(--accent); font-weight: 600; margin-right: 4px; cursor: pointer; }
+  .timestamp:hover { text-decoration: underline; }
+  .speaker-label { font-size: 11px; font-weight: 700; color: var(--accent2); margin-right: 4px; }
+
+  /* MoM */
+  .mom-section { margin-bottom: 28px; }
+  .mom-section-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+  .mom-item { padding: 10px 14px; background: rgba(255,255,255,.03); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; margin-bottom: 8px; font-size: 13px; line-height: 1.6; }
+  .mom-timestamp { font-size: 11px; font-weight: 700; color: var(--accent); background: rgba(108,99,255,.1); padding: 2px 7px; border-radius: 5px; margin-right: 8px; cursor: pointer; }
+  .mom-timestamp:hover { background: rgba(108,99,255,.25); }
+  .mom-owner { font-weight: 600; color: var(--accent2); }
+  .mom-summary { font-size: 14px; line-height: 1.8; color: var(--text); background: rgba(255,255,255,.03); padding: 16px; border-radius: var(--radius); }
+  .agenda-item { padding: 8px 12px; background: rgba(255,255,255,.03); border-radius: 8px; margin-bottom: 6px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .agenda-bullet { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+
+  /* Chat */
+  .chat-wrap { display: flex; flex-direction: column; height: 100%; }
+  .chat-messages { flex: 1; overflow-y: auto; padding: 0 0 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 80%; padding: 12px 16px; border-radius: 14px; font-size: 13px; line-height: 1.7; }
+  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: rgba(255,255,255,.06); border-bottom-left-radius: 4px; }
+  .msg.assistant .sources { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.1); }
+  .source-chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(108,99,255,.15); color: var(--accent2); font-size: 11px; padding: 2px 8px; border-radius: 99px; margin: 2px; cursor: pointer; }
+  .source-chip:hover { background: rgba(108,99,255,.3); }
+  .chat-input-row { display: flex; gap: 8px; flex-shrink: 0; padding-top: 12px; border-top: 1px solid var(--border); }
+  .chat-input { flex: 1; background: rgba(255,255,255,.06); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: var(--text); font-size: 13px; resize: none; height: 44px; min-height: 44px; max-height: 120px; outline: none; transition: border-color .2s; font-family: inherit; }
+  .chat-input:focus { border-color: var(--accent); }
+  .chat-send { background: var(--accent); color: #fff; border: none; border-radius: 10px; width: 44px; height: 44px; font-size: 16px; cursor: pointer; flex-shrink: 0; transition: opacity .2s; }
+  .chat-send:hover { opacity: .85; }
+  .chat-send:disabled { opacity: .4; cursor: not-allowed; }
+  .typing { color: var(--muted); font-size: 12px; padding: 4px 0; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+  /* Utility */
+  .empty-state { text-align: center; color: var(--muted); padding: 40px 20px; font-size: 13px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Sidebar ── -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">Meeting Intelligence <span>Platform</span></div>
+    </div>
+
+    <!-- Upload -->
+    <div class="upload-zone" id="dropZone">
+      <input type="file" id="fileInput" accept=".mp4,.mov,.avi,.mkv,.flv,.wmv,.webm,.wav,.mp3,.m4a,.flac,.ogg,.aac" />
+      <div class="upload-icon">🎙️</div>
+      <p><strong>Drop audio or video here</strong><br/>or click to browse</p>
+      <button class="upload-btn" id="uploadBtn" onclick="uploadFile()">Upload & Process</button>
+    </div>
+    <div class="progress-bar" id="uploadProgress">
+      <div class="progress-fill" id="uploadProgressFill" style="width:0%"></div>
+    </div>
+
+    <div class="jobs-label">Meetings</div>
+    <div class="jobs-list" id="jobsList">
+      <div class="empty-state">No meetings yet</div>
+    </div>
+  </aside>
+
+  <!-- ── Main ── -->
+  <main class="main" id="mainPanel">
+    <div class="main-empty" id="emptyState">
+      <div class="big-icon">📋</div>
+      <p>Upload a meeting to get started</p>
+    </div>
+
+    <!-- Job detail (hidden until job selected) -->
+    <div id="jobDetail" style="display:none; flex-direction:column; height:100%; overflow:hidden;">
+
+      <div class="job-header">
+        <div class="job-header-title" id="detailTitle">—</div>
+        <div class="job-header-meta" id="detailMeta"></div>
+      </div>
+
+      <div class="steps" id="detailSteps"></div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('transcript')">📝 Transcript</div>
+        <div class="tab" onclick="switchTab('mom')">📋 Minutes</div>
+        <div class="tab" onclick="switchTab('chat')">💬 Chat</div>
+      </div>
+
+      <!-- Transcript tab -->
+      <div class="tab-content active" id="tab-transcript">
+        <div id="transcriptBody"><div class="empty-state">Processing…</div></div>
+      </div>
+
+      <!-- MoM tab -->
+      <div class="tab-content" id="tab-mom">
+        <div id="momBody"><div class="empty-state">Processing…</div></div>
+      </div>
+
+      <!-- Chat tab -->
+      <div class="tab-content" id="tab-chat">
+        <div class="chat-wrap">
+          <div class="chat-messages" id="chatMessages">
+            <div class="empty-state">Ask anything about this meeting</div>
+          </div>
+          <div class="chat-input-row">
+            <textarea class="chat-input" id="chatInput" placeholder="What did they decide about…" onkeydown="chatKeydown(event)" rows="1"></textarea>
+            <button class="chat-send" id="chatSend" onclick="sendChat()">➤</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+const API = '';   // same origin
+let currentJobId = null;
+let pollTimer = null;
+let chatHistory = [];
+let selectedFile = null;
+
+// ── File input / drag ──────────────────────────────────────────────
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+fileInput.addEventListener('change', () => {
+  selectedFile = fileInput.files[0];
+  if (selectedFile) {
+    dropZone.querySelector('p').innerHTML = `<strong>${selectedFile.name}</strong><br/>${(selectedFile.size/1024/1024).toFixed(1)} MB`;
+  }
+});
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) { selectedFile = f; fileInput.files = e.dataTransfer.files; dropZone.querySelector('p').innerHTML = `<strong>${f.name}</strong><br/>${(f.size/1024/1024).toFixed(1)} MB`; }
+});
+
+// ── Upload ─────────────────────────────────────────────────────────
+
+async function uploadFile() {
+  if (!selectedFile) { fileInput.click(); return; }
+
+  const btn = document.getElementById('uploadBtn');
+  const bar = document.getElementById('uploadProgress');
+  const fill = document.getElementById('uploadProgressFill');
+
+  btn.disabled = true; btn.textContent = 'Uploading…';
+  bar.style.display = 'block'; fill.style.width = '30%';
+
+  const fd = new FormData();
+  fd.append('file', selectedFile);
+
+  try {
+    const res = await fetch(`${API}/api/v1/upload`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+    fill.style.width = '100%';
+    setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 600);
+
+    btn.textContent = 'Upload & Process';
+    btn.disabled = false;
+    selectedFile = null;
+    fileInput.value = '';
+    dropZone.querySelector('p').innerHTML = '<strong>Drop audio or video here</strong><br/>or click to browse';
+
+    selectJob(data.job_id);
+    loadJobs();
+    startPolling(data.job_id);
+
+  } catch(e) {
+    btn.textContent = 'Upload & Process';
+    btn.disabled = false;
+    bar.style.display = 'none';
+    alert(e.message);
+  }
+}
+
+// ── Jobs list ──────────────────────────────────────────────────────
+
+async function loadJobs() {
+  const res = await fetch(`${API}/api/v1/jobs`);
+  const data = await res.json();
+  const list = document.getElementById('jobsList');
+  if (!data.jobs.length) { list.innerHTML = '<div class="empty-state">No meetings yet</div>'; return; }
+
+  list.innerHTML = data.jobs.map(j => `
+    <div class="job-card ${j.job_id === currentJobId ? 'active' : ''}" onclick="selectJob('${j.job_id}')">
+      <div class="job-card-name">${esc(j.filename)}</div>
+      <div class="job-card-meta">
+        <span class="badge badge-${statusClass(j.status)}">${j.status}</span>
+        <span>${fmtDate(j.created_at)}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Job detail ─────────────────────────────────────────────────────
+
+async function selectJob(jobId) {
+  currentJobId = jobId;
+  chatHistory = [];
+  document.getElementById('chatMessages').innerHTML = '<div class="empty-state">Ask anything about this meeting</div>';
+
+  document.getElementById('emptyState').style.display = 'none';
+  const detail = document.getElementById('jobDetail');
+  detail.style.display = 'flex';
+
+  await refreshJob(jobId);
+  loadJobs();   // update sidebar highlight
+
+  if (!pollTimer) startPolling(jobId);
+}
+
+async function refreshJob(jobId) {
+  const res = await fetch(`${API}/api/v1/jobs/${jobId}`);
+  const job = await res.json();
+  renderJobDetail(job);
+
+  if (job.transcript_available) loadTranscript(jobId);
+  if (job.mom_available) loadMom(jobId);
+}
+
+function renderJobDetail(job) {
+  document.getElementById('detailTitle').textContent = job.filename;
+
+  const dur = job.duration_seconds ? fmtDuration(job.duration_seconds) : '—';
+  const chunks = job.chunk_count ? `${job.chunk_count} chunks` : '';
+  document.getElementById('detailMeta').innerHTML = `
+    <span>${job.file_type === 'video' ? '🎬' : '🎙️'} ${job.file_type}</span>
+    <span>⏱ ${dur}</span>
+    ${chunks ? `<span>🧩 ${chunks}</span>` : ''}
+    <span class="badge badge-${statusClass(job.status)}">${job.status} ${job.progress < 100 ? job.progress+'%' : ''}</span>
+  `;
+
+  // Steps
+  const STEPS = ['uploaded','transcribing','chunking','indexing','generating_mom','completed'];
+  const cur = STEPS.indexOf(job.status);
+  document.getElementById('detailSteps').innerHTML = STEPS.map((s, i) => `
+    ${i > 0 ? '<span class="step-arrow">›</span>' : ''}
+    <span class="step ${i < cur || job.status==='completed' ? 'done' : i===cur ? 'active' : ''}">
+      <span class="step-dot"></span>${s.replace('_',' ')}
+    </span>
+  `).join('');
+}
+
+// ── Transcript ─────────────────────────────────────────────────────
+
+async function loadTranscript(jobId) {
+  const res = await fetch(`${API}/api/v1/jobs/${jobId}/transcript`);
+  const data = await res.json();
+  const body = document.getElementById('transcriptBody');
+
+  if (data.speaker_segments && data.speaker_segments.length) {
+    // Speaker-attributed view
+    body.innerHTML = data.speaker_segments.map(s => `
+      <div style="margin-bottom:16px">
+        <span class="speaker-label">${esc(s.speaker)}</span>
+        <span class="transcript-text">${esc(s.text)}</span>
+      </div>
+    `).join('');
+  } else if (data.segments && data.segments.length) {
+    // Timestamped segments
+    body.innerHTML = '<div class="transcript-text">' + data.segments.map(s => `
+      <span class="seg">
+        <span class="timestamp" title="${s.start.toFixed(1)}s">[${fmtSec(s.start)}]</span>${esc(s.text.trim())} 
+      </span>
+    `).join('') + '</div>';
+  } else {
+    body.innerHTML = `<div class="transcript-text">${esc(data.text)}</div>`;
+  }
+}
+
+// ── MoM ────────────────────────────────────────────────────────────
+
+async function loadMom(jobId) {
+  const res = await fetch(`${API}/api/v1/jobs/${jobId}/mom`);
+  const mom = await res.json();
+  const body = document.getElementById('momBody');
+
+  let html = '';
+
+  // Summary
+  if (mom.summary) {
+    html += `<div class="mom-section">
+      <div class="mom-section-title">📝 Summary</div>
+      <div class="mom-summary">${esc(mom.summary)}</div>
+    </div>`;
+  }
+
+  // Agenda
+  if (mom.agenda?.length) {
+    html += `<div class="mom-section">
+      <div class="mom-section-title">📋 Agenda</div>
+      ${mom.agenda.map(a => `<div class="agenda-item"><span class="agenda-bullet"></span>${esc(a)}</div>`).join('')}
+    </div>`;
+  }
+
+  // Key points
+  if (mom.key_points?.length) {
+    html += `<div class="mom-section">
+      <div class="mom-section-title">🗝 Key Points</div>
+      ${mom.key_points.map(k => `
+        <div class="mom-item">
+          <span class="mom-timestamp">${esc(k.timestamp||'')}</span>
+          ${k.speaker ? `<span class="mom-owner">${esc(k.speaker)}</span>: ` : ''}
+          ${esc(k.point||'')}
+        </div>
+      `).join('')}
+    </div>`;
+  }
+
+  // Decisions
+  if (mom.decisions?.length) {
+    html += `<div class="mom-section">
+      <div class="mom-section-title">✅ Decisions</div>
+      ${mom.decisions.map(d => `
+        <div class="mom-item">
+          <span class="mom-timestamp">${esc(d.timestamp||'')}</span>
+          ${esc(d.decision||'')}
+        </div>
+      `).join('')}
+    </div>`;
+  }
+
+  // Action items
+  if (mom.action_items?.length) {
+    html += `<div class="mom-section">
+      <div class="mom-section-title">📌 Action Items</div>
+      ${mom.action_items.map(a => `
+        <div class="mom-item">
+          <span class="mom-timestamp">${esc(a.timestamp||'')}</span>
+          <span class="mom-owner">${esc(a.owner||'Unknown')}</span> → ${esc(a.task||'')}
+        </div>
+      `).join('')}
+    </div>`;
+  }
+
+  body.innerHTML = html || '<div class="empty-state">No MoM data available.</div>';
+}
+
+// ── Chat ───────────────────────────────────────────────────────────
+
+function chatKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const q = input.value.trim();
+  if (!q || !currentJobId) return;
+
+  const send = document.getElementById('chatSend');
+  input.value = ''; send.disabled = true;
+
+  appendMsg('user', q);
+  chatHistory.push({ role: 'user', content: q });
+
+  const typing = appendMsg('assistant', '<span class="typing"><span class="spinner"></span> Thinking…</span>');
+
+  try {
+    const res = await fetch(`${API}/api/v1/jobs/${currentJobId}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q, history: chatHistory.slice(-6) })
+    });
+    const data = await res.json();
+
+    chatHistory.push({ role: 'assistant', content: data.answer });
+
+    let html = esc(data.answer).replace(/\[(\d{2}:\d{2}:\d{2})\]/g,
+      '<span class="mom-timestamp">[$1]</span>');
+
+    if (data.sources?.length) {
+      html += `<div class="sources"><strong style="font-size:11px;color:var(--muted)">Sources:</strong><br/>` +
+        data.sources.map(s =>
+          `<span class="source-chip">🕐 ${s.start_timestamp}–${s.end_timestamp}</span>`
+        ).join('') + '</div>';
+    }
+    typing.innerHTML = html;
+
+  } catch(e) {
+    typing.innerHTML = `<span style="color:var(--error)">Error: ${esc(e.message)}</span>`;
+  }
+
+  send.disabled = false;
+  document.getElementById('chatMessages').scrollTop = 9999;
+}
+
+function appendMsg(role, html) {
+  const wrap = document.getElementById('chatMessages');
+  // Remove empty state
+  const empty = wrap.querySelector('.empty-state');
+  if (empty) empty.remove();
+
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = html;
+  wrap.appendChild(div);
+  wrap.scrollTop = 9999;
+  return div;
+}
+
+// ── Polling ────────────────────────────────────────────────────────
+
+function startPolling(jobId) {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    if (!currentJobId) return;
+    const res = await fetch(`${API}/api/v1/jobs/${currentJobId}`);
+    const job = await res.json();
+    renderJobDetail(job);
+    if (job.transcript_available) loadTranscript(currentJobId);
+    if (job.mom_available) loadMom(currentJobId);
+    loadJobs();
+    if (job.status === 'completed' || job.status === 'failed') {
+      clearInterval(pollTimer); pollTimer = null;
+    }
+  }, 3000);
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', ['transcript','mom','chat'][i] === name));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+}
+
+// ── Utils ──────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function statusClass(s) {
+  if (s==='completed') return 'completed';
+  if (s==='failed') return 'failed';
+  if (s==='uploaded') return 'uploaded';
+  return 'processing';
+}
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+function fmtDuration(secs) {
+  const m = Math.floor(secs/60), s = Math.floor(secs%60);
+  return `${m}m ${s}s`;
+}
+function fmtSec(s) {
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), sec=Math.floor(s%60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+loadJobs();
+</script>
+</body>
+</html>
