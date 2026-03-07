@@ -32,6 +32,7 @@ from src.audio_to_text.converter import convert_audio_to_text
 from src.chunking.chunker import TranscriptChunker
 from src.vector_store.store import MeetingVectorStore
 from src.report_generation.rag_mom_generator import RAGMoMGenerator
+from src.video_clipping.clipper import VideoClipper
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -53,12 +54,20 @@ static_path = Path(__file__).parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
+# Mount clips directory for serving video clips
+clips_path = settings.clips_dir
+clips_path.mkdir(parents=True, exist_ok=True)
+app.mount("/clips", StaticFiles(directory=str(clips_path)), name="clips")
+
 # Ensure all data dirs exist
-for d in [settings.video_dir, settings.audio_dir, settings.transcript_dir, settings.jobs_dir]:
+for d in [settings.video_dir, settings.audio_dir, settings.transcript_dir, settings.jobs_dir, settings.clips_dir]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 # Thread pool for CPU-bound work (Whisper, embeddings)
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Video clipper for generating meeting clips
+_clipper = VideoClipper(str(settings.clips_dir))
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
@@ -397,7 +406,7 @@ async def chat(job_id: str, req: ChatRequest):
             answer_parts.append(f"[{r['start_timestamp']}] {r['raw_text'][:200]}")
         return ChatResponse(
             answer="\n\n".join(answer_parts),
-            sources=_format_sources(filtered)
+            sources=_format_sources(job_id, filtered)
         )
 
     # RAG + LLM answer
@@ -439,8 +448,46 @@ Question: {question}
 
     return ChatResponse(
         answer=answer,
-        sources=_format_sources(filtered)
+        sources=_format_sources(job_id, filtered)
     )
+
+
+# ── Video Clips ──────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/jobs/{job_id}/clips/{start_time}/{end_time}", tags=["Clips"])
+async def get_video_clip(job_id: str, start_time: float, end_time: float):
+    """
+    Generate and return a video clip for the given timestamp range.
+    Uses padding to ensure natural audio boundaries.
+    """
+    job = _get_job_or_404(job_id)
+
+    # Check if video file exists (don't require job completion)
+    video_filename = job.get("filename")
+    if not video_filename:
+        raise HTTPException(status_code=404, detail="Video file not found.")
+
+    # Determine the saved video filename
+    expected_ext = Path(video_filename).suffix
+    video_path = settings.video_dir / f"{job_id}{expected_ext}"
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk.")
+
+    # Generate clip
+    clip_path = _clipper.clip_video(
+        video_path=str(video_path),
+        start_time=start_time,
+        end_time=end_time,
+        job_id=job_id
+    )
+
+    if not clip_path:
+        raise HTTPException(status_code=500, detail="Failed to generate video clip.")
+
+    # Return clip URL
+    clip_url = _clipper.get_clip_url(clip_path)
+    return {"clip_url": clip_url, "start_time": start_time, "end_time": end_time}
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -502,7 +549,7 @@ def _job_detail(job_id: str, job: dict) -> dict:
     return d
 
 
-def _format_sources(chunks: List[dict]) -> List[dict]:
+def _format_sources(job_id: str, chunks: List[dict]) -> List[dict]:
     return [
         {
             "chunk_id":        c.get("chunk_id"),
@@ -513,6 +560,7 @@ def _format_sources(chunks: List[dict]) -> List[dict]:
             "speakers":        c.get("speakers", []),
             "text":            c.get("raw_text", "")[:300],
             "score":           round(c.get("score", 0), 3),
+            "clip_url":        f"/api/v1/jobs/{job_id}/clips/{c.get('start', 0)}/{c.get('end', 0)}",
         }
         for c in chunks
     ]

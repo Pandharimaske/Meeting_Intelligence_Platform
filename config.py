@@ -124,6 +124,10 @@ class Settings(BaseSettings):
         default=Path("data/video"),
         description="Directory for uploaded video files"
     )
+    clips_dir: Path = Field(
+        default=Path("data/clips"),
+        description="Directory for generated video clips"
+    )
 
     # ── API Server ────────────────────────────────────────────────
     api_host: str = Field(default="0.0.0.0")

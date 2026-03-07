@@ -488,7 +488,7 @@ async function sendChat() {
     if (data.sources?.length) {
       html += `<div class="sources"><strong style="font-size:11px;color:var(--muted)">Sources:</strong><br/>` +
         data.sources.map(s =>
-          `<span class="source-chip">🕐 ${s.start_timestamp}–${s.end_timestamp}</span>`
+          `<span class="source-chip" onclick="playClip('${s.clip_url}', '${s.start_timestamp}–${s.end_timestamp}')">🎬 ${s.start_timestamp}–${s.end_timestamp}</span>`
         ).join('') + '</div>';
     }
     typing.innerHTML = html;
@@ -499,6 +499,19 @@ async function sendChat() {
 
   send.disabled = false;
   document.getElementById('chatMessages').scrollTop = 9999;
+}
+
+async function playClip(clipUrl, timestamp) {
+  try {
+    const res = await fetch(`${API}${clipUrl}`);
+    const data = await res.json();
+    if (data.clip_url) {
+      // Open clip in new window/tab
+      window.open(`${API}${data.clip_url}`, '_blank');
+    }
+  } catch(e) {
+    alert(`Failed to load clip: ${e.message}`);
+  }
 }
 
 function appendMsg(role, html) {
