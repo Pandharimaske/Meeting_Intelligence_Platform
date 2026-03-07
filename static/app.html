@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Intelligence Platform</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .gradient-accent { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .glass-effect { background: rgba(255, 255, 255, 0.1); backdrop-filter: blur(10px); }
+        .spin-slow { animation: spin 3s linear infinite; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        .step-badge { @apply inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-bold; }
+        .step-done { @apply bg-green-500 text-white; }
+        .step-active { @apply bg-blue-500 text-white; }
+        .step-pending { @apply bg-gray-600 text-gray-300; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+    <div id="app" class="min-h-screen">
+        <!-- Header -->
+        <header class="sticky top-0 z-50 bg-gray-800/90 backdrop-blur border-b border-gray-700">
+            <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 gradient-accent rounded-lg flex items-center justify-center">
+                        <i class="fas fa-brain text-white"></i>
+                    </div>
+                    <div>
+                        <h1 class="text-2xl font-bold text-white">Meeting Intelligence</h1>
+                        <p class="text-xs text-gray-400">Intelligent Meeting Analysis Platform</p>
+                    </div>
+                </div>
+                <div class="text-sm text-gray-400">
+                    <span id="connection-status" class="flex items-center gap-2">
+                        <i class="fas fa-circle text-green-500"></i> Connected
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-6 py-8">
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <!-- Sidebar -->
+                <div class="lg:col-span-1">
+                    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+                        <!-- Upload Section -->
+                        <div class="p-6 border-b border-gray-700">
+                            <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                                <i class="fas fa-upload"></i> Upload Meeting
+                            </h3>
+                            <label class="block">
+                                <div class="border-2 border-dashed border-gray-600 rounded-lg p-4 text-center cursor-pointer hover:border-blue-500 hover:bg-gray-700/50 transition-all">
+                                    <i class="fas fa-video text-gray-500 text-2xl mb-2 block"></i>
+                                    <p class="text-xs text-gray-400 font-medium">Choose Video File</p>
+                                    <input type="file" id="fileInput" accept="video/*" class="hidden" />
+                                </div>
+                            </label>
+                            <button id="uploadBtn" class="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                                <i class="fas fa-rocket"></i> Upload & Process
+                            </button>
+                        </div>
+
+                        <!-- Jobs List -->
+                        <div class="p-6">
+                            <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                                <i class="fas fa-list"></i> Recent Jobs
+                            </h3>
+                            <div id="jobsList" class="space-y-2 max-h-96 overflow-y-auto">
+                                <div class="text-xs text-gray-500 py-4 text-center">
+                                    <i class="fas fa-inbox"></i> No jobs yet
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Main Panel -->
+                <div class="lg:col-span-3">
+                    <!-- Empty State -->
+                    <div id="emptyState" class="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl border border-gray-700 p-12 text-center">
+                        <div class="text-6xl mb-4">📹</div>
+                        <h2 class="text-2xl font-bold text-white mb-2">No Meeting Selected</h2>
+                        <p class="text-gray-400 mb-6">Upload a video to get started with AI-powered meeting intelligence</p>
+                        <div class="flex gap-4 justify-center text-sm text-gray-400">
+                            <div class="flex flex-col items-center">
+                                <i class="fas fa-waveform-lines text-2xl mb-2 text-blue-500"></i>
+                                <span>Transcription</span>
+                            </div>
+                            <div class="flex flex-col items-center">
+                                <i class="fas fa-users text-2xl mb-2 text-purple-500"></i>
+                                <span>Diarization</span>
+                            </div>
+                            <div class="flex flex-col items-center">
+                                <i class="fas fa-file-lines text-2xl mb-2 text-pink-500"></i>
+                                <span>Minutes of Meeting</span>
+                            </div>
+                            <div class="flex flex-col items-center">
+                                <i class="fas fa-film text-2xl mb-2 text-green-500"></i>
+                                <span>Video Clipping</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Job Details (Hidden by default) -->
+                    <div id="jobDetails" class="hidden space-y-6">
+                        <!-- Progress -->
+                        <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+                            <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                                <i class="fas fa-tasks"></i> Processing Progress
+                            </h3>
+                            <div id="progressSteps" class="space-y-3">
+                                <!-- Steps will be populated here -->
+                            </div>
+                        </div>
+
+                        <!-- Tabs -->
+                        <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+                            <div class="flex border-b border-gray-700 bg-gray-900/50">
+                                <button class="tab-btn flex-1 px-4 py-3 text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent hover:border-blue-500 transition-colors active" data-tab="transcript">
+                                    <i class="fas fa-closed-captioning"></i> Transcript
+                                </button>
+                                <button class="tab-btn flex-1 px-4 py-3 text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="mom">
+                                    <i class="fas fa-memo"></i> Minutes of Meeting
+                                </button>
+                                <button class="tab-btn flex-1 px-4 py-3 text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="chat">
+                                    <i class="fas fa-comments"></i> AI Chat
+                                </button>
+                                <button class="tab-btn flex-1 px-4 py-3 text-sm font-medium text-gray-400 hover:text-white border-b-2 border-transparent hover:border-blue-500 transition-colors" data-tab="clips">
+                                    <i class="fas fa-film"></i> Video Clips
+                                </button>
+                            </div>
+
+                            <!-- Tab Contents -->
+                            <div class="p-6">
+                                <!-- Transcript Tab -->
+                                <div id="transcript-tab" class="tab-content active">
+                                    <div class="space-y-3 max-h-96 overflow-y-auto">
+                                        <div id="transcriptContent" class="text-gray-400 text-sm leading-relaxed">
+                                            <p class="text-center py-8"><i class="fas fa-spinner spin-slow"></i> Loading transcript...</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- MoM Tab -->
+                                <div id="mom-tab" class="tab-content hidden">
+                                    <div class="space-y-4 max-h-96 overflow-y-auto">
+                                        <div id="momContent" class="text-gray-400 text-sm">
+                                            <p class="text-center py-8"><i class="fas fa-spinner spin-slow"></i> Generating minutes...</p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Chat Tab -->
+                                <div id="chat-tab" class="tab-content hidden">
+                                    <div class="flex flex-col h-96">
+                                        <div id="chatMessages" class="flex-1 overflow-y-auto mb-4 space-y-3 pr-2">
+                                            <div class="text-xs text-gray-500 text-center py-4">
+                                                <i class="fas fa-lightbulb"></i> Ask questions about the meeting
+                                            </div>
+                                        </div>
+                                        <div class="flex gap-2">
+                                            <input type="text" id="chatInput" placeholder="Ask about the meeting..." class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500" />
+                                            <button id="sendChatBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors">
+                                                <i class="fas fa-paper-plane"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Clips Tab -->
+                                <div id="clips-tab" class="tab-content hidden">
+                                    <div class="space-y-3 max-h-96 overflow-y-auto">
+                                        <div id="clipsContent" class="grid grid-cols-2 gap-3">
+                                            <p class="text-center py-8 col-span-2"><i class="fas fa-spinner spin-slow"></i> Generating clips...</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Video Player -->
+                        <div class="bg-gray-800 rounded-xl border border-gray-700 p-6">
+                            <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                                <i class="fas fa-play-circle"></i> Video Player
+                            </h3>
+                            <video id="videoPlayer" controls class="w-full rounded-lg bg-black">
+                                <source type="video/mp4">
+                                Your browser does not support the video tag.
+                            </video>
+                            <div id="videoInfo" class="mt-4 text-xs text-gray-400 space-y-1">
+                                <!-- Video info will be shown here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="hidden fixed inset-0 bg-black/50 backdrop-blur flex items-center justify-center z-50">
+            <div class="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
+                <div class="text-4xl mb-4">
+                    <i class="fas fa-spinner spin-slow text-blue-500"></i>
+                </div>
+                <p class="text-white font-semibold mb-2" id="loadingText">Processing video...</p>
+                <p class="text-sm text-gray-400" id="loadingSubtext">This may take a few minutes</p>
+                <div class="mt-4 w-64 h-1 bg-gray-700 rounded overflow-hidden">
+                    <div id="loadingProgress" class="h-full bg-gradient-to-r from-blue-500 to-purple-500 w-0%" style="transition: width 0.3s ease;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let currentJobId = null;
+        let selectedFile = null;
+
+        // API Helpers
+        async function apiCall(endpoint, method = 'GET', data = null) {
+            try {
+                const options = {
+                    method,
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                };
+                
+                if (method === 'POST' && data) {
+                    options.body = JSON.stringify(data);
+                }
+
+                const response = await fetch(`${API_URL}${endpoint}`, options);
+                if (!response.ok) throw new Error(`API error: ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        // UI Helpers
+        function showLoading(show = true, text = 'Processing video...', subtext = 'This may take a few minutes') {
+            const overlay = document.getElementById('loadingOverlay');
+            document.getElementById('loadingText').textContent = text;
+            document.getElementById('loadingSubtext').textContent = subtext;
+            overlay.classList.toggle('hidden', !show);
+        }
+
+        function showEmptyState(show = true) {
+            document.getElementById('emptyState').classList.toggle('hidden', !show);
+            document.getElementById('jobDetails').classList.toggle('hidden', show);
+        }
+
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            const bgColor = type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-blue-600';
+            const icon = type === 'error' ? 'fa-circle-exclamation' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle';
+            
+            toast.innerHTML = `
+                <div class="fixed top-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 z-50 fade-in">
+                    <i class="fas ${icon}"></i> ${message}
+                </div>
+            `;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+
+        // File Upload
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            selectedFile = e.target.files[0];
+            const uploadBtn = document.getElementById('uploadBtn');
+            uploadBtn.disabled = !selectedFile;
+            if (selectedFile) {
+                uploadBtn.textContent = `✓ ${selectedFile.name}`;
+                setTimeout(() => uploadBtn.textContent = '<i class="fas fa-rocket"></i> Upload & Process', 2000);
+            }
+        });
+
+        document.getElementById('uploadBtn').addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            try {
+                showLoading(true, 'Uploading video...', 'Please wait while we process your meeting');
+
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                const response = await fetch(`${API_URL}/api/v1/upload`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!response.ok) throw new Error('Upload failed');
+                const result = await response.json();
+                currentJobId = result.job_id;
+
+                showToast('✓ Upload successful! Processing started...', 'success');
+                await loadJobDetails(currentJobId);
+                await pollJobStatus(currentJobId);
+            } catch (error) {
+                console.error('Upload error:', error);
+                showToast('✗ Upload failed. Please try again.', 'error');
+                showLoading(false);
+            }
+        });
+
+        // Load Job Details
+        async function loadJobDetails(jobId) {
+            try {
+                const job = await apiCall(`/api/v1/jobs/${jobId}`);
+                currentJobId = jobId;
+
+                showEmptyState(false);
+                updateProgressSteps(job.status);
+                
+                if (job.source_video) {
+                    document.querySelector('video source').src = job.source_video;
+                    document.getElementById('videoPlayer').load();
+                }
+
+                // Load transcript
+                if (job.transcript) {
+                    const transcript = typeof job.transcript === 'string' ? JSON.parse(job.transcript) : job.transcript;
+                    displayTranscript(transcript);
+                }
+
+                // Load MoM
+                if (job.mom) {
+                    const mom = typeof job.mom === 'string' ? JSON.parse(job.mom) : job.mom;
+                    displayMoM(mom);
+                }
+
+                addJobToList(job);
+            } catch (error) {
+                console.error('Error loading job:', error);
+            }
+        }
+
+        // Update Progress Steps
+        function updateProgressSteps(status) {
+            const stepsDiv = document.getElementById('progressSteps');
+            const steps = [
+                { name: 'Upload', key: 'uploaded' },
+                { name: 'Extract Audio', key: 'audio_extracted' },
+                { name: 'Transcription', key: 'transcribed' },
+                { name: 'Diarization', key: 'diarized' },
+                { name: 'Embedding', key: 'embedded' },
+                { name: 'Generate MoM', key: 'mom_generated' },
+                { name: 'Ready', key: 'completed' }
+            ];
+
+            stepsDiv.innerHTML = steps.map((step, idx) => {
+                const isCompleted = status === 'completed' || (status && status.includes(step.key));
+                const isActive = status && status.includes(step.key);
+                const stepClass = isCompleted ? 'step-done' : (isActive ? 'step-active' : 'step-pending');
+
+                return `
+                    <div class="flex items-center gap-3">
+                        <div class="step-badge ${stepClass}">
+                            ${isCompleted ? '<i class="fas fa-check"></i>' : (isActive ? '<i class="fas fa-spinner spin-slow"></i>' : idx + 1)}
+                        </div>
+                        <span class="text-sm ${isCompleted ? 'text-green-400' : (isActive ? 'text-blue-400 font-semibold' : 'text-gray-500')}">${step.name}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Display Transcript
+        function displayTranscript(transcript) {
+            const content = document.getElementById('transcriptContent');
+            if (Array.isArray(transcript)) {
+                content.innerHTML = transcript.map(seg => `
+                    <div class="border-l-2 border-blue-500 pl-4 py-2 text-gray-300">
+                        <span class="text-xs text-gray-500">[${seg.start?.toFixed(2) || '0:00'}s]</span>
+                        <span class="font-semibold text-blue-400 text-xs">${seg.speaker || 'Unknown'}</span>
+                        <p class="text-sm mt-1">${seg.text || seg}</p>
+                    </div>
+                `).join('');
+            } else {
+                content.innerHTML = `<p class="text-sm text-gray-300">${JSON.stringify(transcript, null, 2)}</p>`;
+            }
+        }
+
+        // Display MoM
+        function displayMoM(mom) {
+            const content = document.getElementById('momContent');
+            if (typeof mom === 'string') {
+                content.innerHTML = `<p class="text-sm text-gray-300 whitespace-pre-wrap">${mom}</p>`;
+            } else {
+                let html = '';
+                if (mom.agenda) html += `<div><strong class="text-white">📋 Agenda:</strong> <p class="text-sm text-gray-300">${mom.agenda}</p></div>`;
+                if (mom.key_points) html += `<div><strong class="text-white">🔑 Key Points:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.key_points) ? mom.key_points : [mom.key_points]).map(p => `<li>${p}</li>`).join('')}</ul></div>`;
+                if (mom.decisions) html += `<div><strong class="text-white">✅ Decisions:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.decisions) ? mom.decisions : [mom.decisions]).map(d => `<li>${d}</li>`).join('')}</ul></div>`;
+                if (mom.action_items) html += `<div><strong class="text-white">📝 Action Items:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.action_items) ? mom.action_items : [mom.action_items]).map(a => `<li>${a}</li>`).join('')}</ul></div>`;
+                content.innerHTML = html || 'No data available';
+            }
+        }
+
+        // Chat
+        document.getElementById('sendChatBtn').addEventListener('click', async () => {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message || !currentJobId) return;
+
+            const messagesDiv = document.getElementById('chatMessages');
+            
+            // Add user message
+            messagesDiv.innerHTML += `
+                <div class="flex justify-end">
+                    <div class="bg-blue-600 text-white px-4 py-2 rounded-lg max-w-xs text-sm">
+                        ${message}
+                    </div>
+                </div>
+            `;
+            input.value = '';
+
+            try {
+                const response = await apiCall(`/api/v1/jobs/${currentJobId}/chat`, 'POST', { question: message });
+                
+                // Add AI response
+                messagesDiv.innerHTML += `
+                    <div class="flex justify-start">
+                        <div class="bg-gray-700 text-gray-100 px-4 py-2 rounded-lg max-w-xs text-sm">
+                            ${response.answer || response.response || 'No response'}
+                        </div>
+                    </div>
+                `;
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } catch (error) {
+                console.error('Chat error:', error);
+                showToast('Failed to send message', 'error');
+            }
+        });
+
+        // Tab Switching
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active', 'border-blue-500', 'text-white'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+                
+                btn.classList.add('active', 'border-blue-500', 'text-white');
+                const tabId = btn.dataset.tab + '-tab';
+                document.getElementById(tabId).classList.remove('hidden');
+            });
+        });
+
+        // Jobs List
+        function addJobToList(job) {
+            const jobsList = document.getElementById('jobsList');
+            if (jobsList.innerHTML.includes('No jobs yet')) {
+                jobsList.innerHTML = '';
+            }
+
+            const existingJob = document.querySelector(`[data-job-id="${job.id}"]`);
+            const jobElement = `
+                <div data-job-id="${job.id}" class="p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-600 transition-colors border-l-2 ${job.id === currentJobId ? 'border-blue-500 bg-gray-600' : 'border-transparent'}">
+                    <div class="text-xs font-semibold text-white truncate">${job.filename || 'Meeting'}</div>
+                    <div class="text-xs text-gray-400 mt-1 flex items-center gap-2">
+                        <i class="fas fa-circle text-xs" style="color: ${job.status === 'completed' ? '#22c55e' : job.status === 'failed' ? '#ef4444' : '#f59e0b'}"></i>
+                        ${job.status}
+                    </div>
+                </div>
+            `;
+
+            if (existingJob) {
+                existingJob.replaceWith(document.createElement('div').innerHTML = jobElement.trim());
+                document.querySelector(`[data-job-id="${job.id}"]`).addEventListener('click', () => loadJobDetails(job.id));
+            } else {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = jobElement;
+                jobsList.appendChild(tempDiv.firstChild);
+                jobsList.lastChild.addEventListener('click', () => loadJobDetails(job.id));
+            }
+        }
+
+        // Poll Job Status
+        async function pollJobStatus(jobId, maxAttempts = 120) {
+            let attempts = 0;
+            const interval = setInterval(async () => {
+                attempts++;
+                try {
+                    const job = await apiCall(`/api/v1/jobs/${jobId}`);
+                    updateProgressSteps(job.status);
+
+                    if (job.status === 'completed') {
+                        clearInterval(interval);
+                        await loadJobDetails(jobId);
+                        showLoading(false);
+                        showToast('✓ Processing complete!', 'success');
+                    } else if (job.status === 'failed') {
+                        clearInterval(interval);
+                        showLoading(false);
+                        showToast('✗ Processing failed', 'error');
+                    }
+                } catch (error) {
+                    console.error('Poll error:', error);
+                }
+
+                if (attempts >= maxAttempts) {
+                    clearInterval(interval);
+                    showLoading(false);
+                }
+            }, 2000);
+        }
+
+        // Load Initial Jobs
+        async function loadInitialJobs() {
+            try {
+                const jobs = await apiCall('/api/v1/jobs');
+                if (Array.isArray(jobs) && jobs.length > 0) {
+                    jobs.forEach(job => addJobToList(job));
+                }
+            } catch (error) {
+                console.error('Error loading jobs:', error);
+            }
+        }
+
+        // Initialize
+        loadInitialJobs();
+    </script>
+</body>
+</html>

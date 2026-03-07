@@ -231,11 +231,19 @@ async def health():
 
 @app.get("/", tags=["Health"])
 async def root():
+    from fastapi.responses import FileResponse
+    try:
+        app_path = Path(__file__).parent.parent / "static" / "app.html"
+        if app_path.exists():
+            return FileResponse(app_path, media_type="text/html")
+    except:
+        pass
+    
     return {
         "name": "Meeting Intelligence Platform",
         "version": "1.0.0",
         "docs": "/docs",
-        "frontend": "/static/index.html",
+        "frontend": "/static/app.html",
     }
 
 
@@ -359,6 +367,23 @@ async def get_transcript(job_id: str, fmt: str = "json"):
         "speakers":        transcript.get("speakers", {}),
         "total_speakers":  transcript.get("total_speakers", 0),
     })
+
+
+@app.get("/api/v1/jobs/{job_id}/video", tags=["Video"])
+async def get_video(job_id: str):
+    """Get the source video file for streaming."""
+    job = _get_job_or_404(job_id)
+    
+    video_path = job.get("video_path")
+    if not video_path or not Path(video_path).exists():
+        raise HTTPException(status_code=404, detail="Video not found.")
+    
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=Path(video_path).name
+    )
 
 
 # ── MoM ───────────────────────────────────────────────────────────────────────
@@ -541,10 +566,15 @@ def _job_summary(job_id: str, job: dict) -> dict:
 def _job_detail(job_id: str, job: dict) -> dict:
     d = _job_summary(job_id, job)
     d.update({
+        "id": job_id,  # Add id for frontend convenience
         "transcript_available": job.get("transcript_available", False),
         "mom_available":        job.get("mom_available", False),
         "chunk_count":          job.get("chunk_count", 0),
         "duration_seconds":     job.get("duration_seconds"),
+        # Include transcript and mom directly in detail response
+        "transcript": job.get("transcript", {}),
+        "mom": job.get("mom", {}),
+        "source_video": f"/api/v1/jobs/{job_id}/video" if job.get("video_path") else None,
     })
     return d
 
