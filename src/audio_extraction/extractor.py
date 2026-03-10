@@ -56,7 +56,7 @@ class AudioExtractor:
                 .output(
                     str(output_path),
                     ac=1,            # Mono channel
-                    ar=16000,        # 16kHz sample rate (Whisper requirement)
+                    ar=16000,        # 16kHz sample rate (required by WhisperX)
                     acodec='pcm_s16le'
                 )
                 .overwrite_output()

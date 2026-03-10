@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-from typing import Literal
+from typing import Literal, Optional
 from pathlib import Path
 
 
@@ -43,9 +43,9 @@ class Settings(BaseSettings):
         default="arcee-ai/trinity-large-preview:free",
         description=(
             "Model name. Defaults: "
-            "openrouter→arcee-ai/trinity-large-preview:free, "
-            "anthropic→claude-haiku-4-5-20251001, "
-            "openai→gpt-3.5-turbo"
+            "openrouter->arcee-ai/trinity-large-preview:free, "
+            "anthropic->claude-haiku-4-5-20251001, "
+            "openai->gpt-3.5-turbo"
         )
     )
     llm_max_tokens: int = Field(
@@ -57,24 +57,38 @@ class Settings(BaseSettings):
         description="LLM sampling temperature (lower = more deterministic)"
     )
 
-    # ── Whisper ───────────────────────────────────────────────────
-    whisper_model: Literal["tiny", "base", "small", "medium", "large"] = Field(
+    # ── WhisperX ──────────────────────────────────────────────────
+    whisper_model: Literal["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"] = Field(
         default="base",
-        description="Whisper model size for transcription"
+        description="WhisperX model size for transcription"
     )
     whisper_language: str = Field(
         default="en",
-        description="Language hint for Whisper (e.g. 'en', 'hi', 'fr')"
+        description="Language hint for WhisperX (e.g. 'en', 'hi', 'fr')"
+    )
+    whisperx_compute_type: str = Field(
+        default="",
+        description=(
+            "CTranslate2 compute type: 'float16' (GPU), 'int8' (CPU), 'float32'. "
+            "Leave empty to auto-detect based on device."
+        )
+    )
+    whisperx_batch_size: int = Field(
+        default=16,
+        description="Batch size for WhisperX transcription (reduce if VRAM is limited)"
     )
 
     # ── Diarization ───────────────────────────────────────────────
     enable_diarization: bool = Field(
         default=False,
-        description="Enable speaker diarization via pyannote"
+        description=(
+            "Enable speaker diarization. WhisperX runs pyannote internally "
+            "when a huggingface_token is provided."
+        )
     )
     huggingface_token: str = Field(
         default="",
-        description="HuggingFace token for pyannote diarization"
+        description="HuggingFace token for pyannote diarization models"
     )
 
     # ── Embeddings ────────────────────────────────────────────────
@@ -142,12 +156,16 @@ class Settings(BaseSettings):
         if self.llm_model:
             return self.llm_model
         defaults = {
-            "anthropic":   "claude-haiku-4-5-20251001",
-            "openai":      "gpt-3.5-turbo",
-            "openrouter":  "arcee-ai/trinity-large-preview:free",
-            "template":    ""
+            "anthropic":  "claude-haiku-4-5-20251001",
+            "openai":     "gpt-3.5-turbo",
+            "openrouter": "arcee-ai/trinity-large-preview:free",
+            "template":   ""
         }
         return defaults.get(self.llm_backend, "")
+
+    def get_whisperx_compute_type(self) -> Optional[str]:
+        """Return compute_type or None so AudioToTextConverter can auto-detect."""
+        return self.whisperx_compute_type if self.whisperx_compute_type else None
 
     def validate_llm(self) -> None:
         """Raise if the chosen backend has no API key configured."""

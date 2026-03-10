@@ -54,20 +54,25 @@ STRICT RULES
 
 
 _CHAT_SYSTEM_PROMPT = """\
-You are a knowledgeable meeting assistant with access to the transcript of a specific meeting.
+You are a helpful, friendly meeting assistant. You have access to the full transcript of a meeting.
 
 YOUR JOB
 --------
-Answer the user's question accurately using ONLY the transcript excerpts provided.
-Cite timestamps in [HH:MM:SS] format whenever you reference a specific moment.
+Help the user understand what happened in their meeting.
+- Answer questions about content, decisions, action items, speakers, and topics.
+- If the user greets you or makes small talk, respond warmly and briefly, then offer to help.
+- If the user asks for a summary, always provide one using the excerpts given.
+- Cite timestamps in [HH:MM:SS] format when referencing specific moments.
 
 RULES
 -----
-1. Base every claim on the excerpts — never invent or extrapolate.
-2. If the answer is not in the excerpts, say clearly: "The transcript doesn't cover that."
-3. If the question is ambiguous, answer the most likely intent and note the ambiguity.
-4. Be concise and direct. Avoid padding.
-5. Format your answer in plain text — no markdown, no bullet points unless the question asks for a list.
+1. Use the transcript excerpts and meeting metadata as your primary source. Never invent facts.
+2. For greetings or small talk ("hi", "hello", "thanks"), respond naturally and briefly.
+3. For content questions, always attempt an answer from the excerpts before concluding the topic isn't covered.
+4. Only say the topic isn't covered if you have genuinely searched and found nothing relevant.
+5. Be conversational and concise. Use plain text — avoid markdown unless listing items.
+6. When summarising, cover: main topics, key decisions, and action items.
+7. For questions about meeting duration, start time, end time, or length — use the MEETING METADATA block provided at the top of the prompt.
 """
 
 
@@ -343,14 +348,69 @@ class RAGMoMGenerator:
         Returns:
             Plain-text answer with timestamp citations.
         """
-        # Expand query with rephrasing for better retrieval coverage
-        queries = self._expand_chat_query(question)
-        chunks  = self._retrieve_multi(queries, top_k=self.top_k)
+        q = question.strip()
 
+        # ── Handle greetings / small talk without hitting the vector store ──
+        _GREETINGS = {"hi", "hii", "hello", "hey", "howdy", "greetings", "sup", "yo"}
+        if q.lower().rstrip("!.,") in _GREETINGS:
+            return (
+                "Hello! I'm your meeting assistant. I have the full transcript of this meeting "
+                "loaded. You can ask me things like:\n"
+                "\u2022 \"What was decided?\"\n"
+                "\u2022 \"Summarise the meeting\"\n"
+                "\u2022 \"Who is responsible for [task]?\"\n"
+                "\u2022 \"What did [speaker] say about [topic]?\""
+            )
+
+        # ── Detect summary requests — use broad queries + lower threshold ──
+        _SUMMARY_WORDS = {"summary", "summarise", "summarize", "overview", "recap",
+                          "brief", "tldr", "tl;dr", "what happened", "what was discussed"}
+        is_summary = any(w in q.lower() for w in _SUMMARY_WORDS)
+
+        # ── Retrieve relevant chunks ──────────────────────────────────────
+        queries = self._expand_chat_query(q)
+        # Use a lower threshold for chat than for MoM generation
+        chat_threshold = min(self.score_threshold, 0.15)
+
+        chunks = self._retrieve_multi_with_threshold(queries, top_k=self.top_k, threshold=chat_threshold)
+
+        # Fallback 1: if still empty, grab first N chunks (for summaries / broad questions)
         if not chunks:
-            return "The transcript doesn't contain information relevant to that question."
+            chunks = self.store._chunks[:min(8, len(self.store._chunks))]
 
-        context = self._format_context(chunks)
+        # For summary requests, always include more chunks for wider coverage
+        if is_summary:
+            extra = self.store._chunks[:min(10, len(self.store._chunks))]
+            seen_ids = {c.get("chunk_id") for c in chunks}
+            for c in extra:
+                if c.get("chunk_id") not in seen_ids:
+                    chunks.append(c)
+                    seen_ids.add(c.get("chunk_id"))
+
+        context = self._format_context(chunks[:12])  # cap at 12 chunks to stay within token budget
+
+        # ── Inject meeting metadata so the LLM can answer meta-questions ──
+        all_chunks = self.store._chunks
+        if all_chunks:
+            first = min(all_chunks, key=lambda c: c["start"])
+            last  = max(all_chunks, key=lambda c: c["end"])
+            total_secs = last["end"] - first["start"]
+            h = int(total_secs // 3600)
+            m = int((total_secs % 3600) // 60)
+            s = int(total_secs % 60)
+            duration_str = (
+                f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s"
+            )
+            meeting_meta = (
+                f"MEETING METADATA\n"
+                f"----------------\n"
+                f"Start time    : {first['start_timestamp']}\n"
+                f"End time      : {last['end_timestamp']}\n"
+                f"Total duration: {duration_str}\n"
+                f"Total chunks  : {len(all_chunks)}\n\n"
+            )
+        else:
+            meeting_meta = ""
 
         # Build conversation history block
         history_block = ""
@@ -363,13 +423,14 @@ class RAGMoMGenerator:
             history_block += "\n"
 
         prompt = (
+            f"{meeting_meta}"
             f"{history_block}"
             f"TRANSCRIPT EXCERPTS\n"
             f"{'-' * 20}\n"
             f"{context}\n"
             f"QUESTION\n"
             f"{'-' * 20}\n"
-            f"{question}"
+            f"{q}"
         )
 
         return self._call_llm_raw(prompt, system=_CHAT_SYSTEM_PROMPT)
@@ -440,6 +501,20 @@ class RAGMoMGenerator:
             variants.append("action items tasks responsibilities assigned owner")
 
         return variants[:3]
+
+    def _retrieve_multi_with_threshold(self, queries: List[str], top_k: int, threshold: float) -> List[Dict]:
+        """Like _retrieve_multi but with a custom score threshold."""
+        seen:   set  = set()
+        merged: List[Dict] = []
+        for q in queries:
+            for chunk in self.store.search(q, top_k=top_k):
+                if chunk.get("score", 0) < threshold:
+                    continue
+                cid = chunk.get("chunk_id")
+                if cid not in seen:
+                    seen.add(cid)
+                    merged.append(chunk)
+        return merged
 
     def _retrieve(self, query: str) -> List[Dict]:
         results = self.store.search(query, top_k=self.top_k)

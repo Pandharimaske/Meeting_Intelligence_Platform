@@ -236,13 +236,16 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
             else:
                 audio_path = str(file_path)
 
-            update("transcribing", "Transcribing audio with Whisper…", 25)
+            update("transcribing", "Transcribing audio with WhisperX…", 25)
             transcript = convert_audio_to_text(
                 audio_path,
                 model_size=settings.whisper_model,
                 output_dir=str(job_dir / "transcripts"),
                 enable_diarization=settings.enable_diarization,
                 huggingface_token=settings.huggingface_token or None,
+                compute_type=settings.get_whisperx_compute_type(),
+                batch_size=settings.whisperx_batch_size,
+                language=settings.whisper_language or "en",
             )
 
         jobs[job_id]["transcript"] = transcript

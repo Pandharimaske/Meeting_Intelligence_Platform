@@ -5,9 +5,9 @@ from typing import List, Dict
 
 class TranscriptChunker:
     """
-    Splits a Whisper transcript into semantic, time-aligned chunks.
+    Splits a WhisperX transcript into semantic, time-aligned chunks.
 
-    Key design (from ResearchPaperGaps.md - Gap #2 Anaphora fix):
+    Key design:
     Before embedding, each chunk is prefixed with metadata:
         [Time: 00:01:23 - 00:02:45 | Speakers: Speaker 0, Speaker 1]
         "He said it's too high, so we rejected it."
@@ -15,6 +15,9 @@ class TranscriptChunker:
     This injects context (who, when) into the vector so queries like
     "what did they decide about the budget?" can match chunks that only
     contain pronouns and no explicit keywords.
+
+    Compatible with both plain WhisperX segments and diarized segments
+    (where each segment has a 'speaker' field).
     """
 
     def __init__(self, max_chunk_words: int = 120, overlap_segments: int = 1):
@@ -34,7 +37,7 @@ class TranscriptChunker:
 
     def chunk_transcript(self, transcript_json_path: str) -> List[Dict]:
         """
-        Load a Whisper JSON transcript and return a list of chunks.
+        Load a WhisperX JSON transcript and return a list of chunks.
 
         Each chunk dict contains:
             - chunk_id        : int
@@ -43,12 +46,13 @@ class TranscriptChunker:
             - start_timestamp : str    "HH:MM:SS"
             - end_timestamp   : str    "HH:MM:SS"
             - speakers        : list   unique speaker labels in this chunk
+            - primary_speaker : str    most frequent speaker in this chunk
             - raw_text        : str    plain concatenated text
             - embedded_text   : str    metadata-prefixed text used for embedding
-            - segments        : list   original Whisper segment dicts
+            - segments        : list   original segment dicts
 
         Args:
-            transcript_json_path: Path to the Whisper JSON file.
+            transcript_json_path: Path to the WhisperX JSON file.
 
         Returns:
             List of chunk dicts.
@@ -71,8 +75,8 @@ class TranscriptChunker:
 
     def chunk_from_segments(self, segments: List[Dict]) -> List[Dict]:
         """
-        Build chunks directly from a list of Whisper segment dicts.
-        Useful when the transcript is already in memory (e.g. from the API).
+        Build chunks directly from a list of segment dicts (already in memory).
+        Used by api.py after WhisperX transcription completes.
         """
         return self._build_chunks(segments)
 
@@ -111,10 +115,23 @@ class TranscriptChunker:
 
         raw_text = " ".join(s.get("text", "").strip() for s in segments).strip()
 
-        # Collect unique speakers (present only when diarization has run)
+        # Collect unique speakers in order of appearance
+        # WhisperX sets 'speaker' per segment after diarization
         speakers = list(dict.fromkeys(
-            s["speaker"] for s in segments if "speaker" in s
+            s["speaker"] for s in segments if s.get("speaker") and s["speaker"] != "Unknown"
         ))
+        # Fall back to "Unknown" if no speakers identified
+        if not speakers:
+            speakers = list(dict.fromkeys(
+                s.get("speaker", "Unknown") for s in segments
+            ))
+
+        # Primary speaker = most frequent in this chunk
+        speaker_counts: Dict[str, int] = {}
+        for s in segments:
+            sp = s.get("speaker", "Unknown")
+            speaker_counts[sp] = speaker_counts.get(sp, 0) + 1
+        primary_speaker = max(speaker_counts, key=speaker_counts.get) if speaker_counts else "Unknown"
 
         # Build the metadata-enriched text for embedding
         embedded_text = self._build_embedded_text(raw_text, start, end, speakers)
@@ -126,9 +143,12 @@ class TranscriptChunker:
             "start_timestamp": self._fmt_time(start),
             "end_timestamp": self._fmt_time(end),
             "speakers": speakers,
+            "primary_speaker": primary_speaker,
             "raw_text": raw_text,
             "embedded_text": embedded_text,
             "segments": segments,
+            "word_count": len(raw_text.split()),
+            "duration": round(end - start, 2),
         }
 
     def _build_embedded_text(self, text: str, start: float, end: float, speakers: List[str]) -> str:
@@ -164,10 +184,10 @@ class TranscriptChunker:
 
 def chunk_transcript(transcript_json_path: str, max_chunk_words: int = 120) -> List[Dict]:
     """
-    Convenience function to chunk a Whisper JSON transcript.
+    Convenience function to chunk a WhisperX JSON transcript.
 
     Args:
-        transcript_json_path: Path to Whisper JSON output file.
+        transcript_json_path: Path to WhisperX JSON output file.
         max_chunk_words:      Approx max words per chunk (default 120).
 
     Returns:
