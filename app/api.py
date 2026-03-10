@@ -3,12 +3,13 @@ Meeting Intelligence Platform — Full API
 
 Pipeline per upload:
   1. Save file
-  2. If video → extract audio
-  3. Audio → Whisper transcript
-  4. Transcript → semantic chunks
-  5. Chunks → FAISS vector store
-  6. Vector store + RAG → MoM (Minutes of Meeting)
-  7. Vector store kept in memory for /chat endpoint
+  2. If video  → extract audio
+     If SRT    → parse transcript directly (skip Whisper)
+     If audio  → Whisper transcription
+  3. Transcript → semantic chunks  (speaker + timestamp preserved)
+  4. Chunks → FAISS vector store  (rich metadata for video clipping)
+  5. Vector store + RAG → MoM (Minutes of Meeting)
+  6. Vector store kept in memory for /chat endpoint
 """
 
 import uuid
@@ -17,11 +18,11 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -29,6 +30,7 @@ from pydantic import BaseModel
 from config import settings
 from src.audio_extraction.extractor import extract_audio_from_video
 from src.audio_to_text.converter import convert_audio_to_text
+from src.srt_parser.parser import parse_srt
 from src.chunking.chunker import TranscriptChunker
 from src.vector_store.store import MeetingVectorStore
 from src.report_generation.rag_mom_generator import RAGMoMGenerator
@@ -38,7 +40,7 @@ from src.video_clipping.clipper import VideoClipper
 
 app = FastAPI(
     title="Meeting Intelligence Platform",
-    description="Upload a meeting audio/video → get transcript, MoM, and chat with your meeting.",
+    description="Upload a meeting audio/video/transcript → get transcript, MoM, and chat with your meeting.",
     version="1.0.0",
 )
 
@@ -47,14 +49,15 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
-# Mount static files for the frontend
+# Mount static files
 static_path = Path(__file__).parent.parent / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
-# Mount clips directory for serving video clips
+# Mount clips directory
 clips_path = settings.clips_dir
 clips_path.mkdir(parents=True, exist_ok=True)
 app.mount("/clips", StaticFiles(directory=str(clips_path)), name="clips")
@@ -66,27 +69,34 @@ for d in [settings.video_dir, settings.audio_dir, settings.transcript_dir, setti
 # Thread pool for CPU-bound work (Whisper, embeddings)
 _executor = ThreadPoolExecutor(max_workers=2)
 
-# Video clipper for generating meeting clips
+# Video clipper
 _clipper = VideoClipper(str(settings.clips_dir))
 
 # ── In-memory state ───────────────────────────────────────────────────────────
 
-# job_id → job dict
 jobs: Dict[str, dict] = {}
-
-# job_id → loaded MeetingVectorStore (for chat)
 vector_stores: Dict[str, MeetingVectorStore] = {}
 
+# MIME type map for video extensions
+_VIDEO_MIME = {
+    ".mp4":  "video/mp4",
+    ".mov":  "video/quicktime",
+    ".avi":  "video/x-msvideo",
+    ".mkv":  "video/x-matroska",
+    ".webm": "video/webm",
+    ".flv":  "video/x-flv",
+    ".wmv":  "video/x-ms-wmv",
+}
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class JobStatus(BaseModel):
     job_id: str
-    status: str          # uploaded | transcribing | chunking | indexing | generating_mom | completed | failed
-    step: str            # human-readable current step
-    progress: int        # 0-100
+    status: str
+    step: str
+    progress: int
     filename: str
-    file_type: str       # audio | video
+    file_type: str
     created_at: str
     completed_at: Optional[str] = None
     error: Optional[str] = None
@@ -99,11 +109,11 @@ class JobDetail(JobStatus):
 
 class ChatRequest(BaseModel):
     question: str
-    history: Optional[List[Dict]] = []   # [{"role": "user"|"assistant", "content": "..."}]
+    history: Optional[List[Dict]] = []
 
 class ChatResponse(BaseModel):
     answer: str
-    sources: List[Dict] = []   # retrieved chunks with timestamps
+    sources: List[Dict] = []
 
 
 # ── Helper: build RAG generator from config ───────────────────────────────────
@@ -128,13 +138,80 @@ def _make_rag(store: MeetingVectorStore) -> RAGMoMGenerator:
     )
 
 
-# ── Pipeline (runs in thread pool) ───────────────────────────────────────────
+# ── Video range-request helper ────────────────────────────────────────────────
+
+def _parse_range_header(range_header: str, file_size: int) -> Tuple[int, int]:
+    """Parse 'Range: bytes=start-end' and return (start, end) clamped to file size."""
+    try:
+        unit, rng = range_header.split("=", 1)
+        if unit.strip().lower() != "bytes":
+            return 0, file_size - 1
+        start_str, _, end_str = rng.partition("-")
+        start = int(start_str) if start_str.strip() else 0
+        end   = int(end_str)   if end_str.strip()   else file_size - 1
+        start = max(0, min(start, file_size - 1))
+        end   = max(start, min(end, file_size - 1))
+        return start, end
+    except Exception:
+        return 0, file_size - 1
+
+
+def _video_streaming_response(video_path: Path, request: Request) -> StreamingResponse:
+    """
+    Return a StreamingResponse that honours HTTP Range requests.
+    Browsers send Range headers for video scrubbing/seeking — without this,
+    the video element stalls after the initial buffer runs out.
+    """
+    file_size = video_path.stat().st_size
+    mime_type = _VIDEO_MIME.get(video_path.suffix.lower(), "video/mp4")
+
+    range_header = request.headers.get("range")
+
+    if range_header:
+        start, end = _parse_range_header(range_header, file_size)
+        chunk_size  = end - start + 1
+
+        def iter_file():
+            with open(video_path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    data = f.read(min(65536, remaining))   # 64 KB chunks
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        headers = {
+            "Content-Range":  f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(chunk_size),
+            "Content-Type":   mime_type,
+        }
+        return StreamingResponse(iter_file(), status_code=206, headers=headers)
+
+    else:
+        # Full file — still stream it so memory stays flat
+        def iter_full():
+            with open(video_path, "rb") as f:
+                while True:
+                    data = f.read(65536)
+                    if not data:
+                        break
+                    yield data
+
+        headers = {
+            "Accept-Ranges":  "bytes",
+            "Content-Length": str(file_size),
+            "Content-Type":   mime_type,
+        }
+        return StreamingResponse(iter_full(), status_code=200, headers=headers)
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
-    """
-    Full processing pipeline. Runs synchronously in a thread.
-    Updates jobs[job_id] at each stage.
-    """
+    """Full processing pipeline. Runs synchronously in a thread pool."""
     def update(status: str, step: str, progress: int):
         jobs[job_id].update({"status": status, "step": step, "progress": progress})
 
@@ -142,34 +219,41 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         job_dir = settings.jobs_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── Step 1: Extract audio (video only) ──────────────────
-        if file_type == "video":
-            update("transcribing", "Extracting audio from video…", 10)
-            audio_path = extract_audio_from_video(
-                str(file_path), output_dir=str(settings.audio_dir)
-            )
-        else:
-            audio_path = str(file_path)
+        # ── Step 1: Obtain transcript ────────────────────────────────────
+        if file_type == "srt":
+            update("transcribing", "Parsing SRT transcript…", 20)
+            transcript = parse_srt(str(file_path))
+            print(f"  ✓ SRT parsed: {transcript['total_speakers']} speakers, "
+                  f"{len(transcript['segments'])} segments")
 
-        # ── Step 2: Transcribe ───────────────────────────────────
-        update("transcribing", "Transcribing audio with Whisper…", 25)
-        transcript = convert_audio_to_text(
-            audio_path,
-            model_size=settings.whisper_model,
-            output_dir=str(job_dir / "transcripts"),
-            enable_diarization=settings.enable_diarization,
-            huggingface_token=settings.huggingface_token or None,
-        )
+        else:
+            if file_type == "video":
+                update("transcribing", "Extracting audio from video…", 10)
+                audio_path = extract_audio_from_video(
+                    str(file_path), output_dir=str(settings.audio_dir)
+                )
+                jobs[job_id]["video_path"] = str(file_path)
+            else:
+                audio_path = str(file_path)
+
+            update("transcribing", "Transcribing audio with Whisper…", 25)
+            transcript = convert_audio_to_text(
+                audio_path,
+                model_size=settings.whisper_model,
+                output_dir=str(job_dir / "transcripts"),
+                enable_diarization=settings.enable_diarization,
+                huggingface_token=settings.huggingface_token or None,
+            )
+
         jobs[job_id]["transcript"] = transcript
         jobs[job_id]["transcript_available"] = True
 
-        # Estimate duration from last segment
         segments = transcript.get("segments", [])
         if segments:
             jobs[job_id]["duration_seconds"] = segments[-1].get("end", 0)
 
-        # ── Step 3: Chunk ────────────────────────────────────────
-        update("chunking", "Splitting transcript into semantic chunks…", 50)
+        # ── Step 2: Chunk ────────────────────────────────────────────────
+        update("chunking", "Splitting transcript into semantic chunks…", 45)
         chunker = TranscriptChunker(
             max_chunk_words=settings.chunk_max_words,
             overlap_segments=settings.chunk_overlap_segments,
@@ -177,23 +261,23 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         chunks = chunker.chunk_from_segments(segments)
         jobs[job_id]["chunk_count"] = len(chunks)
 
-        # Save chunks
         with open(job_dir / "chunks.json", "w") as f:
             json.dump(chunks, f, indent=2, default=str)
 
-        # ── Step 4: Build vector store ───────────────────────────
-        update("indexing", "Building semantic search index…", 65)
+        print(f"  ✓ {len(chunks)} chunks created")
+
+        # ── Step 3: Embed + store ────────────────────────────────────────
+        update("indexing", "Embedding chunks and building FAISS index…", 62)
         store = MeetingVectorStore(model_name=settings.embedding_model)
-        store.build(chunks)
-        store.save(str(job_dir / "vector_store"))
+        store.build(chunks, meeting_id=job_id)
+        store.save(str(job_dir / "vector_store"), meeting_id=job_id)
         vector_stores[job_id] = store
 
-        # ── Step 5: Generate MoM ─────────────────────────────────
+        # ── Step 4: Generate MoM ─────────────────────────────────────────
         update("generating_mom", "Generating Minutes of Meeting…", 80)
         mom_path = str(job_dir / "mom.json")
 
         if settings.llm_backend == "template":
-            # Lightweight fallback
             from src.report_generation.mom_generator import MoMGenerator
             gen = MoMGenerator(backend="template")
             mom = gen.generate(chunks, output_path=mom_path)
@@ -204,20 +288,20 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         jobs[job_id]["mom"] = mom
         jobs[job_id]["mom_available"] = True
 
-        # ── Done ─────────────────────────────────────────────────
         jobs[job_id].update({
-            "status": "completed",
-            "step": "Done",
-            "progress": 100,
+            "status":       "completed",
+            "step":         "Done",
+            "progress":     100,
             "completed_at": datetime.utcnow().isoformat(),
         })
+        print(f"  ✓ Pipeline complete for job {job_id}")
 
     except Exception as e:
         jobs[job_id].update({
             "status": "failed",
-            "step": f"Failed: {str(e)}",
+            "step":   f"Failed: {str(e)}",
             "progress": 0,
-            "error": str(e),
+            "error":  str(e),
         })
         raise
 
@@ -232,174 +316,149 @@ async def health():
 @app.get("/", tags=["Health"])
 async def root():
     from fastapi.responses import FileResponse
-    try:
-        app_path = Path(__file__).parent.parent / "static" / "app.html"
-        if app_path.exists():
-            return FileResponse(app_path, media_type="text/html")
-    except:
-        pass
-    
-    return {
-        "name": "Meeting Intelligence Platform",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "frontend": "/static/app.html",
-    }
+    app_path = Path(__file__).parent.parent / "static" / "index.html"
+    if app_path.exists():
+        return FileResponse(app_path, media_type="text/html")
+    return {"name": "Meeting Intelligence Platform", "version": "1.0.0", "docs": "/docs"}
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm"}
+SRT_EXTENSIONS   = {".srt", ".vtt"}
 
 @app.post("/api/v1/upload", tags=["Pipeline"])
-async def upload_file(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-):
-    """
-    Upload an audio or video file. Returns a job_id immediately.
-    Poll GET /api/v1/jobs/{job_id} to track progress.
-    """
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
 
     ext = Path(file.filename).suffix.lower()
-    if ext in AUDIO_EXTENSIONS:
-        file_type = "audio"
-        save_dir = settings.audio_dir
-    elif ext in VIDEO_EXTENSIONS:
-        file_type = "video"
-        save_dir = settings.video_dir
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. "
-                   f"Audio: {', '.join(AUDIO_EXTENSIONS)}  "
-                   f"Video: {', '.join(VIDEO_EXTENSIONS)}"
-        )
 
-    job_id = str(uuid.uuid4())
+    if ext in AUDIO_EXTENSIONS:
+        file_type, save_dir = "audio", settings.audio_dir
+    elif ext in VIDEO_EXTENSIONS:
+        file_type, save_dir = "video", settings.video_dir
+    elif ext in SRT_EXTENSIONS:
+        file_type, save_dir = "srt", settings.transcript_dir
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type '{ext}'.")
+
+    job_id    = str(uuid.uuid4())
     save_path = Path(save_dir) / f"{job_id}{ext}"
 
-    # Save file to disk
     with open(save_path, "wb") as buf:
         shutil.copyfileobj(file.file, buf)
 
-    # Initialise job record
     jobs[job_id] = {
-        "job_id":       job_id,
-        "status":       "uploaded",
-        "step":         "Queued for processing…",
-        "progress":     5,
-        "filename":     file.filename,
-        "file_type":    file_type,
-        "created_at":   datetime.utcnow().isoformat(),
-        "completed_at": None,
-        "error":        None,
-        "transcript":   None,
-        "mom":          None,
-        "transcript_available": False,
-        "mom_available":        False,
-        "chunk_count":          0,
-        "duration_seconds":     None,
+        "job_id": job_id, "status": "uploaded",
+        "step": "Queued for processing…", "progress": 5,
+        "filename": file.filename, "file_type": file_type,
+        "created_at": datetime.utcnow().isoformat(), "completed_at": None,
+        "error": None, "transcript": None, "mom": None,
+        "transcript_available": False, "mom_available": False,
+        "chunk_count": 0, "duration_seconds": None, "video_path": None,
     }
 
-    # Run pipeline in background thread (non-blocking)
     loop = asyncio.get_event_loop()
     background_tasks.add_task(
         loop.run_in_executor, _executor, _run_pipeline, job_id, save_path, file_type
     )
 
-    return {
-        "job_id":    job_id,
-        "status":    "uploaded",
-        "filename":  file.filename,
-        "file_type": file_type,
-        "message":   "Processing started. Poll /api/v1/jobs/{job_id} for status.",
-    }
+    return {"job_id": job_id, "status": "uploaded", "filename": file.filename,
+            "file_type": file_type, "message": "Processing started."}
 
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/jobs", tags=["Jobs"])
 async def list_jobs(status: Optional[str] = None):
-    """List all jobs, optionally filtered by status."""
-    result = []
-    for jid, job in jobs.items():
-        if status is None or job["status"] == status:
-            result.append(_job_summary(jid, job))
+    result = [_job_summary(jid, job) for jid, job in jobs.items()
+              if status is None or job["status"] == status]
     return {"jobs": sorted(result, key=lambda j: j["created_at"], reverse=True), "total": len(result)}
 
 
 @app.get("/api/v1/jobs/{job_id}", tags=["Jobs"])
 async def get_job(job_id: str):
-    """Get full status and metadata for a job."""
-    job = _get_job_or_404(job_id)
-    return _job_detail(job_id, job)
+    return _job_detail(job_id, _get_job_or_404(job_id))
 
 
 # ── Transcript ────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/jobs/{job_id}/transcript", tags=["Transcript"])
 async def get_transcript(job_id: str, fmt: str = "json"):
-    """
-    Get the transcript for a completed job.
-    fmt: 'json' (full with segments+timestamps) | 'txt' (plain text)
-    """
     job = _get_job_or_404(job_id)
     _require_completed(job_id, job)
-
     if not job.get("transcript_available"):
         raise HTTPException(status_code=404, detail="Transcript not yet available.")
-
-    transcript = job.get("transcript", {})
-
+    t = job.get("transcript", {})
     if fmt == "txt":
-        return JSONResponse(content={"text": transcript.get("text", "")})
-
-    # Full JSON with segments (timestamps preserved)
+        return JSONResponse(content={"text": t.get("text", "")})
     return JSONResponse(content={
-        "text":            transcript.get("text", ""),
-        "language":        transcript.get("language", "en"),
-        "segments":        transcript.get("segments", []),
-        "speaker_segments": transcript.get("speaker_segments", []),
-        "speakers":        transcript.get("speakers", {}),
-        "total_speakers":  transcript.get("total_speakers", 0),
+        "text": t.get("text", ""), "language": t.get("language", "en"),
+        "segments": t.get("segments", []), "speaker_segments": t.get("speaker_segments", []),
+        "speakers": t.get("speakers", {}), "total_speakers": t.get("total_speakers", 0),
+        "source": t.get("source", "whisper"),
     })
 
 
+# ── Video — with HTTP range request support ───────────────────────────────────
+
 @app.get("/api/v1/jobs/{job_id}/video", tags=["Video"])
-async def get_video(job_id: str):
-    """Get the source video file for streaming."""
+async def get_video(job_id: str, request: Request):
+    """
+    Stream the source video with proper HTTP 206 range-request support.
+    Browsers require range requests to seek/scrub video — without this,
+    the video element shows a black frame even though audio plays fine.
+    """
     job = _get_job_or_404(job_id)
-    
-    video_path = job.get("video_path")
-    if not video_path or not Path(video_path).exists():
-        raise HTTPException(status_code=404, detail="Video not found.")
-    
-    from fastapi.responses import FileResponse
-    return FileResponse(
-        path=video_path,
-        media_type="video/mp4",
-        filename=Path(video_path).name
-    )
+    video_path_str = job.get("video_path")
+    if not video_path_str:
+        raise HTTPException(status_code=404, detail="No video file for this job.")
+
+    video_path = Path(video_path_str)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk.")
+
+    return _video_streaming_response(video_path, request)
+
+
+# ── Chunks ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/v1/jobs/{job_id}/chunks", tags=["Chunks"])
+async def get_chunks(job_id: str, speaker: Optional[str] = None,
+                     start_after: Optional[float] = None, end_before: Optional[float] = None):
+    job = _get_job_or_404(job_id)
+    _require_completed(job_id, job)
+    store  = _get_store(job_id)
+    chunks = store._chunks
+    if speaker:
+        chunks = [c for c in chunks if speaker in c.get("speakers", []) or c.get("primary_speaker") == speaker]
+    if start_after is not None:
+        chunks = [c for c in chunks if c["start"] >= start_after]
+    if end_before is not None:
+        chunks = [c for c in chunks if c["end"] <= end_before]
+    return {
+        "job_id": job_id, "total_chunks": len(chunks),
+        "chunks": [{
+            "chunk_id": c["chunk_id"], "start": c["start"], "end": c["end"],
+            "start_timestamp": c["start_timestamp"], "end_timestamp": c["end_timestamp"],
+            "speakers": c["speakers"], "primary_speaker": c.get("primary_speaker", "Unknown"),
+            "word_count": c.get("word_count", 0), "duration": c.get("duration", 0.0),
+            "raw_text": c["raw_text"],
+            "clip_url": f"/api/v1/jobs/{job_id}/clips/{c['start']}/{c['end']}",
+        } for c in chunks],
+    }
 
 
 # ── MoM ───────────────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/jobs/{job_id}/mom", tags=["MoM"])
 async def get_mom(job_id: str):
-    """
-    Get the generated Minutes of Meeting for a completed job.
-    All items include timestamp citations.
-    """
     job = _get_job_or_404(job_id)
     _require_completed(job_id, job)
-
     if not job.get("mom_available"):
         raise HTTPException(status_code=404, detail="MoM not yet available.")
-
     return JSONResponse(content=job.get("mom", {}))
 
 
@@ -407,112 +466,47 @@ async def get_mom(job_id: str):
 
 @app.post("/api/v1/jobs/{job_id}/chat", tags=["Chat"])
 async def chat(job_id: str, req: ChatRequest):
-    """
-    Ask a question about the meeting. Uses RAG over the meeting's vector store.
-    Returns an answer with timestamp-cited sources.
-    """
     job = _get_job_or_404(job_id)
     _require_completed(job_id, job)
-
-    # Load vector store (from memory or disk)
     store = _get_store(job_id)
 
     if settings.llm_backend == "template":
-        # Template fallback: return raw search results as answer
-        results = store.search(req.question, top_k=settings.rag_top_k)
+        results  = store.search(req.question, top_k=settings.rag_top_k)
         filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
         if not filtered:
-            return ChatResponse(
-                answer="I couldn't find relevant information in the transcript for that question.",
-                sources=[]
-            )
-        answer_parts = []
-        for r in filtered:
-            answer_parts.append(f"[{r['start_timestamp']}] {r['raw_text'][:200]}")
-        return ChatResponse(
-            answer="\n\n".join(answer_parts),
-            sources=_format_sources(job_id, filtered)
-        )
+            return ChatResponse(answer="I couldn't find relevant information.", sources=[])
+        answer = "\n\n".join(f"[{r['start_timestamp']}] {r['raw_text'][:200]}" for r in filtered)
+        return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered))
 
-    # RAG + LLM answer
     rag = _make_rag(store)
 
-    # Build context-aware prompt including conversation history
-    history_text = ""
-    if req.history:
-        history_text = "\n".join(
-            f"{'User' if h['role']=='user' else 'Assistant'}: {h['content']}"
-            for h in req.history[-6:]  # last 3 turns
-        )
+    # answer_question uses the dedicated chat system prompt, query expansion,
+    # and multi-query retrieval — all defined in RAGMoMGenerator.
+    answer = rag.answer_question(req.question, history=req.history or [])
 
-    question = req.question
-    if history_text:
-        question = f"Conversation so far:\n{history_text}\n\nNew question: {req.question}"
-
-    # Retrieve relevant chunks
-    results = store.search(req.question, top_k=settings.rag_top_k)
+    # Fetch sources separately for the UI (direct search on the raw question)
+    results  = store.search(req.question, top_k=settings.rag_top_k)
     filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
 
-    if not filtered:
-        return ChatResponse(
-            answer="I couldn't find relevant information in the transcript for that question.",
-            sources=[]
-        )
-
-    context = rag._format_context(filtered)
-
-    prompt = f"""Using the meeting transcript excerpts below, answer the following question.
-You MUST cite timestamps like [HH:MM:SS] when referencing specific moments.
-Be concise and factual. If the answer is not in the excerpts, say so clearly.
-
-Question: {question}
-
-{context}"""
-
-    answer = rag._call_llm_raw(prompt)
-
-    return ChatResponse(
-        answer=answer,
-        sources=_format_sources(job_id, filtered)
-    )
+    return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered))
 
 
-# ── Video Clips ──────────────────────────────────────────────────────────────
+# ── Video Clips ───────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/jobs/{job_id}/clips/{start_time}/{end_time}", tags=["Clips"])
 async def get_video_clip(job_id: str, start_time: float, end_time: float):
-    """
-    Generate and return a video clip for the given timestamp range.
-    Uses padding to ensure natural audio boundaries.
-    """
     job = _get_job_or_404(job_id)
-
-    # Check if video file exists (don't require job completion)
     video_filename = job.get("filename")
     if not video_filename:
         raise HTTPException(status_code=404, detail="Video file not found.")
-
-    # Determine the saved video filename
     expected_ext = Path(video_filename).suffix
-    video_path = settings.video_dir / f"{job_id}{expected_ext}"
-
+    video_path   = settings.video_dir / f"{job_id}{expected_ext}"
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk.")
-
-    # Generate clip
-    clip_path = _clipper.clip_video(
-        video_path=str(video_path),
-        start_time=start_time,
-        end_time=end_time,
-        job_id=job_id
-    )
-
+    clip_path = _clipper.clip_video(str(video_path), start_time=start_time, end_time=end_time, job_id=job_id)
     if not clip_path:
         raise HTTPException(status_code=500, detail="Failed to generate video clip.")
-
-    # Return clip URL
-    clip_url = _clipper.get_clip_url(clip_path)
-    return {"clip_url": clip_url, "start_time": start_time, "end_time": end_time}
+    return {"clip_url": _clipper.get_clip_url(clip_path), "start_time": start_time, "end_time": end_time}
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -522,75 +516,51 @@ def _get_job_or_404(job_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
     return jobs[job_id]
 
-
 def _require_completed(job_id: str, job: dict):
     if job["status"] == "failed":
-        raise HTTPException(status_code=400, detail=f"Job failed: {job.get('error', 'unknown error')}")
+        raise HTTPException(status_code=400, detail=f"Job failed: {job.get('error', 'unknown')}")
     if job["status"] != "completed":
-        raise HTTPException(
-            status_code=202,
-            detail=f"Job is still processing. Status: {job['status']} — {job['step']}"
-        )
-
+        raise HTTPException(status_code=202, detail=f"Still processing: {job['step']}")
 
 def _get_store(job_id: str) -> MeetingVectorStore:
-    """Load vector store from memory cache or disk."""
     if job_id in vector_stores:
         return vector_stores[job_id]
-
     store_dir = settings.jobs_dir / job_id / "vector_store"
     if not store_dir.exists():
         raise HTTPException(status_code=404, detail="Vector store not found for this job.")
-
     store = MeetingVectorStore(model_name=settings.embedding_model)
-    store.load(str(store_dir))
+    store.load(str(store_dir), meeting_id=job_id)
     store._get_model()
     vector_stores[job_id] = store
     return store
 
-
 def _job_summary(job_id: str, job: dict) -> dict:
     return {
-        "job_id":       job_id,
-        "status":       job["status"],
-        "step":         job["step"],
-        "progress":     job["progress"],
-        "filename":     job["filename"],
-        "file_type":    job["file_type"],
-        "created_at":   job["created_at"],
-        "completed_at": job.get("completed_at"),
-        "error":        job.get("error"),
+        "job_id": job_id, "status": job["status"], "step": job["step"],
+        "progress": job["progress"], "filename": job["filename"],
+        "file_type": job["file_type"], "created_at": job["created_at"],
+        "completed_at": job.get("completed_at"), "error": job.get("error"),
     }
-
 
 def _job_detail(job_id: str, job: dict) -> dict:
     d = _job_summary(job_id, job)
     d.update({
-        "id": job_id,  # Add id for frontend convenience
+        "id": job_id,
         "transcript_available": job.get("transcript_available", False),
         "mom_available":        job.get("mom_available", False),
         "chunk_count":          job.get("chunk_count", 0),
         "duration_seconds":     job.get("duration_seconds"),
-        # Include transcript and mom directly in detail response
-        "transcript": job.get("transcript", {}),
-        "mom": job.get("mom", {}),
-        "source_video": f"/api/v1/jobs/{job_id}/video" if job.get("video_path") else None,
+        "transcript":           job.get("transcript", {}),
+        "mom":                  job.get("mom", {}),
+        "source_video":         f"/api/v1/jobs/{job_id}/video" if job.get("video_path") else None,
     })
     return d
 
-
 def _format_sources(job_id: str, chunks: List[dict]) -> List[dict]:
-    return [
-        {
-            "chunk_id":        c.get("chunk_id"),
-            "start_timestamp": c.get("start_timestamp"),
-            "end_timestamp":   c.get("end_timestamp"),
-            "start":           c.get("start"),
-            "end":             c.get("end"),
-            "speakers":        c.get("speakers", []),
-            "text":            c.get("raw_text", "")[:300],
-            "score":           round(c.get("score", 0), 3),
-            "clip_url":        f"/api/v1/jobs/{job_id}/clips/{c.get('start', 0)}/{c.get('end', 0)}",
-        }
-        for c in chunks
-    ]
+    return [{
+        "chunk_id": c.get("chunk_id"), "start_timestamp": c.get("start_timestamp"),
+        "end_timestamp": c.get("end_timestamp"), "start": c.get("start"), "end": c.get("end"),
+        "speakers": c.get("speakers", []), "primary_speaker": c.get("primary_speaker", "Unknown"),
+        "text": c.get("raw_text", "")[:300], "score": round(c.get("score", 0), 3),
+        "clip_url": f"/api/v1/jobs/{job_id}/clips/{c.get('start', 0)}/{c.get('end', 0)}",
+    } for c in chunks]

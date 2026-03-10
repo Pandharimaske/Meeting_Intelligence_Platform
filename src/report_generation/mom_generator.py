@@ -7,37 +7,67 @@ from typing import List, Dict, Optional
 # Prompt templates
 # ------------------------------------------------------------------
 
-_MOM_SYSTEM_PROMPT = """You are a professional meeting secretary.
-Your job is to read a meeting transcript and produce a structured Minutes of Meeting (MoM).
-Every line of the transcript begins with a timestamp like [00:01:23 - 00:02:45].
-You MUST cite the timestamp when referencing a decision or action item.
-Be concise and factual. Do not invent information not present in the transcript."""
+_MOM_SYSTEM_PROMPT = """\
+You are an expert meeting analyst and professional minute-taker.
+
+CONTEXT
+-------
+You will receive a full meeting transcript. Each section begins with a timestamp
+range like [00:01:23 - 00:02:45] and optional speaker name(s).
+
+YOUR JOB
+--------
+Produce structured Minutes of Meeting (MoM) in the exact JSON format requested.
+
+STRICT RULES
+------------
+1. Return ONLY valid JSON — no preamble, no explanation, no markdown fences.
+2. NEVER invent or infer facts not explicitly in the transcript.
+3. Cite the START timestamp of the section where each point appears.
+4. Timestamps must be in HH:MM:SS format (e.g. "00:04:12").
+5. Speaker names must match the labels in the transcript exactly.
+   Use "Unknown" only if the speaker is genuinely unidentified.
+6. For action items: extract the OWNER from context (who was asked / who volunteered).
+7. Keep all fields concise — no padding, no filler."""
 
 
-_MOM_USER_PROMPT = """Below is the full transcript of a meeting, split into time-stamped sections.
+_MOM_USER_PROMPT = """\
+Below is the full transcript of a meeting, split into timestamped sections.
 
+TRANSCRIPT
+----------
 {transcript}
 
----
-
-Please produce a Minutes of Meeting in the following exact JSON format:
+INSTRUCTIONS
+------------
+Produce a complete Minutes of Meeting. Use this EXACT JSON schema:
 
 {{
-  "title": "Brief descriptive title of the meeting",
-  "agenda": ["topic 1", "topic 2", ...],
+  "title": "4-8 word descriptive title — NOT 'Meeting Minutes'",
+  "agenda": [
+    "noun-phrase topic 1",
+    "noun-phrase topic 2"
+  ],
   "key_points": [
-    {{"timestamp": "HH:MM:SS", "speaker": "Speaker name or Unknown", "point": "what was said"}}
+    {{"timestamp": "HH:MM:SS", "speaker": "Name or Unknown", "point": "specific fact/statement (not filler)"}}
   ],
   "decisions": [
-    {{"timestamp": "HH:MM:SS", "decision": "what was decided"}}
+    {{"timestamp": "HH:MM:SS", "decision": "what was agreed or approved"}}
   ],
   "action_items": [
-    {{"timestamp": "HH:MM:SS", "owner": "SPEAKER_ID or Unknown", "task": "what they must do"}}
+    {{"timestamp": "HH:MM:SS", "owner": "person responsible (from transcript)", "task": "specific task with deadline if mentioned"}}
   ],
-  "summary": "2-3 sentence overall summary of the meeting"
+  "summary": "3-4 sentence executive summary in third person past tense"
 }}
 
-Return ONLY valid JSON. No explanation, no markdown fences."""
+CRITICAL:
+- Agenda items must be noun phrases, not sentences.
+- Key points must be substantive — omit greetings, logistics, and vague statements.
+- Decisions must be genuine agreements, not mere suggestions.
+- Action item owners must be derived from who was asked or volunteered — not 'Unknown' unless truly unidentifiable.
+- summary must NOT start with 'The meeting...'.
+
+Return ONLY the JSON object. No explanation, no markdown fences."""
 
 
 # ------------------------------------------------------------------
@@ -185,21 +215,23 @@ class MoMGenerator:
     def _generate_template(self, chunks: List[Dict]) -> Dict:
         """
         Rule-based MoM extraction — no LLM required.
-        Simple heuristics: keyword spotting for decisions and action items.
-        Good enough for testing; replace with an LLM backend for production.
+        Improved keyword lists and smarter text truncation.
         """
         decision_keywords = [
             "decided", "decision", "agreed", "going with", "confirmed",
             "let's go with", "settle on", "chosen", "picked", "selected",
-            "stick with", "makes sense", "good idea", "let's do",
-            "we've agreed", "consensus", "that's decided", "final decision",
-            "we'll go", "that'll be", "committed to"
+            "stick with", "let's do", "we've agreed", "consensus",
+            "final decision", "we'll go", "committed to", "approved",
+            "signed off", "green light", "move forward with", "we're going",
+            "that's the plan", "locked in", "finalized", "finalised",
         ]
         action_keywords = [
-            "you're going to", "you will", "needs to", "action", "follow up",
-            "take care", "responsible", "i'll", "he'll", "she'll", "they'll",
-            "next meeting", "by next", "send", "prepare", "work on",
-            "look into", "check", "find out", "come up with", "report back"
+            "you're going to", "you will", "needs to", "action item",
+            "follow up", "take care of", "responsible for", "i'll", "he'll",
+            "she'll", "they'll", "by next", "send", "prepare", "work on",
+            "look into", "check", "find out", "come up with", "report back",
+            "make sure", "reach out", "set up", "schedule", "coordinate",
+            "will handle", "taking ownership", "assigned to",
         ]
 
         key_points = []

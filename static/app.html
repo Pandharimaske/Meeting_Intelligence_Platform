@@ -111,9 +111,7 @@
                             <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
                                 <i class="fas fa-tasks"></i> Processing Progress
                             </h3>
-                            <div id="progressSteps" class="space-y-3">
-                                <!-- Steps will be populated here -->
-                            </div>
+                            <div id="progressSteps" class="space-y-3"></div>
                         </div>
 
                         <!-- Tabs -->
@@ -146,7 +144,7 @@
 
                                 <!-- MoM Tab -->
                                 <div id="mom-tab" class="tab-content hidden">
-                                    <div class="space-y-4 max-h-96 overflow-y-auto">
+                                    <div class="space-y-4 max-h-[32rem] overflow-y-auto pr-1">
                                         <div id="momContent" class="text-gray-400 text-sm">
                                             <p class="text-center py-8"><i class="fas fa-spinner spin-slow"></i> Generating minutes...</p>
                                         </div>
@@ -186,13 +184,9 @@
                             <h3 class="text-sm font-bold text-white mb-4 flex items-center gap-2">
                                 <i class="fas fa-play-circle"></i> Video Player
                             </h3>
-                            <video id="videoPlayer" controls class="w-full rounded-lg bg-black">
-                                <source type="video/mp4">
+                            <video id="videoPlayer" controls preload="metadata" class="w-full rounded-lg bg-black">
                                 Your browser does not support the video tag.
                             </video>
-                            <div id="videoInfo" class="mt-4 text-xs text-gray-400 space-y-1">
-                                <!-- Video info will be shown here -->
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -208,7 +202,7 @@
                 <p class="text-white font-semibold mb-2" id="loadingText">Processing video...</p>
                 <p class="text-sm text-gray-400" id="loadingSubtext">This may take a few minutes</p>
                 <div class="mt-4 w-64 h-1 bg-gray-700 rounded overflow-hidden">
-                    <div id="loadingProgress" class="h-full bg-gradient-to-r from-blue-500 to-purple-500 w-0%" style="transition: width 0.3s ease;"></div>
+                    <div id="loadingProgress" class="h-full bg-gradient-to-r from-blue-500 to-purple-500" style="width:0%; transition: width 0.3s ease;"></div>
                 </div>
             </div>
         </div>
@@ -219,35 +213,20 @@
         let currentJobId = null;
         let selectedFile = null;
 
-        // API Helpers
+        // ── API helper ────────────────────────────────────────────────────────
         async function apiCall(endpoint, method = 'GET', data = null) {
-            try {
-                const options = {
-                    method,
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                };
-                
-                if (method === 'POST' && data) {
-                    options.body = JSON.stringify(data);
-                }
-
-                const response = await fetch(`${API_URL}${endpoint}`, options);
-                if (!response.ok) throw new Error(`API error: ${response.status}`);
-                return await response.json();
-            } catch (error) {
-                console.error('API Error:', error);
-                throw error;
-            }
+            const options = { method, headers: { 'Content-Type': 'application/json' } };
+            if (method === 'POST' && data) options.body = JSON.stringify(data);
+            const response = await fetch(`${API_URL}${endpoint}`, options);
+            if (!response.ok) throw new Error(`API error: ${response.status}`);
+            return response.json();
         }
 
-        // UI Helpers
+        // ── UI helpers ────────────────────────────────────────────────────────
         function showLoading(show = true, text = 'Processing video...', subtext = 'This may take a few minutes') {
-            const overlay = document.getElementById('loadingOverlay');
             document.getElementById('loadingText').textContent = text;
             document.getElementById('loadingSubtext').textContent = subtext;
-            overlay.classList.toggle('hidden', !show);
+            document.getElementById('loadingOverlay').classList.toggle('hidden', !show);
         }
 
         function showEmptyState(show = true) {
@@ -256,229 +235,287 @@
         }
 
         function showToast(message, type = 'info') {
+            const colours = { error: 'bg-red-600', success: 'bg-green-600', info: 'bg-blue-600' };
+            const icons   = { error: 'fa-circle-exclamation', success: 'fa-check-circle', info: 'fa-info-circle' };
             const toast = document.createElement('div');
-            const bgColor = type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-blue-600';
-            const icon = type === 'error' ? 'fa-circle-exclamation' : type === 'success' ? 'fa-check-circle' : 'fa-info-circle';
-            
-            toast.innerHTML = `
-                <div class="fixed top-4 right-4 ${bgColor} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 z-50 fade-in">
-                    <i class="fas ${icon}"></i> ${message}
-                </div>
-            `;
+            toast.innerHTML = `<div class="fixed top-4 right-4 ${colours[type] || colours.info} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-3 z-50 fade-in">
+                <i class="fas ${icons[type] || icons.info}"></i> ${message}</div>`;
             document.body.appendChild(toast);
             setTimeout(() => toast.remove(), 4000);
         }
 
-        // File Upload
+        // ── Upload ────────────────────────────────────────────────────────────
         document.getElementById('fileInput').addEventListener('change', (e) => {
             selectedFile = e.target.files[0];
-            const uploadBtn = document.getElementById('uploadBtn');
-            uploadBtn.disabled = !selectedFile;
-            if (selectedFile) {
-                uploadBtn.textContent = `✓ ${selectedFile.name}`;
-                setTimeout(() => uploadBtn.textContent = '<i class="fas fa-rocket"></i> Upload & Process', 2000);
-            }
+            document.getElementById('uploadBtn').disabled = !selectedFile;
         });
 
         document.getElementById('uploadBtn').addEventListener('click', async () => {
             if (!selectedFile) return;
-
             try {
                 showLoading(true, 'Uploading video...', 'Please wait while we process your meeting');
-
                 const formData = new FormData();
                 formData.append('file', selectedFile);
-
-                const response = await fetch(`${API_URL}/api/v1/upload`, {
-                    method: 'POST',
-                    body: formData,
-                });
-
+                const response = await fetch(`${API_URL}/api/v1/upload`, { method: 'POST', body: formData });
                 if (!response.ok) throw new Error('Upload failed');
                 const result = await response.json();
                 currentJobId = result.job_id;
-
-                showToast('✓ Upload successful! Processing started...', 'success');
+                showToast('Upload successful! Processing started…', 'success');
                 await loadJobDetails(currentJobId);
-                await pollJobStatus(currentJobId);
-            } catch (error) {
-                console.error('Upload error:', error);
-                showToast('✗ Upload failed. Please try again.', 'error');
+                pollJobStatus(currentJobId);
+            } catch (err) {
+                console.error(err);
+                showToast('Upload failed. Please try again.', 'error');
                 showLoading(false);
             }
         });
 
-        // Load Job Details
+        // ── Load job details ──────────────────────────────────────────────────
         async function loadJobDetails(jobId) {
             try {
                 const job = await apiCall(`/api/v1/jobs/${jobId}`);
                 currentJobId = jobId;
-
                 showEmptyState(false);
                 updateProgressSteps(job.status);
-                
+
                 if (job.source_video) {
-                    document.querySelector('video source').src = job.source_video;
-                    document.getElementById('videoPlayer').load();
+                    const player = document.getElementById('videoPlayer');
+                    player.src = `${API_URL}${job.source_video}`;
+                    player.load();
                 }
 
-                // Load transcript
-                if (job.transcript) {
-                    const transcript = typeof job.transcript === 'string' ? JSON.parse(job.transcript) : job.transcript;
+                const transcript = job.transcript;
+                if (transcript && (transcript.segments?.length || transcript.speaker_segments?.length)) {
                     displayTranscript(transcript);
                 }
 
-                // Load MoM
-                if (job.mom) {
-                    const mom = typeof job.mom === 'string' ? JSON.parse(job.mom) : job.mom;
-                    displayMoM(mom);
+                if (job.mom && Object.keys(job.mom).length > 0) {
+                    displayMoM(job.mom);
                 }
 
                 addJobToList(job);
-            } catch (error) {
-                console.error('Error loading job:', error);
+            } catch (err) {
+                console.error('Error loading job:', err);
             }
         }
 
-        // Update Progress Steps
+        // ── Progress steps ────────────────────────────────────────────────────
         function updateProgressSteps(status) {
-            const stepsDiv = document.getElementById('progressSteps');
             const steps = [
-                { name: 'Upload', key: 'uploaded' },
-                { name: 'Extract Audio', key: 'audio_extracted' },
-                { name: 'Transcription', key: 'transcribed' },
-                { name: 'Diarization', key: 'diarized' },
-                { name: 'Embedding', key: 'embedded' },
-                { name: 'Generate MoM', key: 'mom_generated' },
-                { name: 'Ready', key: 'completed' }
+                { name: 'Upload',        done: true },
+                { name: 'Transcription', done: ['transcribing','chunking','indexing','generating_mom','completed'].includes(status) },
+                { name: 'Chunking',      done: ['chunking','indexing','generating_mom','completed'].includes(status) },
+                { name: 'Embedding',     done: ['indexing','generating_mom','completed'].includes(status) },
+                { name: 'Generate MoM',  done: ['generating_mom','completed'].includes(status) },
+                { name: 'Ready',         done: status === 'completed' },
             ];
-
-            stepsDiv.innerHTML = steps.map((step, idx) => {
-                const isCompleted = status === 'completed' || (status && status.includes(step.key));
-                const isActive = status && status.includes(step.key);
-                const stepClass = isCompleted ? 'step-done' : (isActive ? 'step-active' : 'step-pending');
-
-                return `
-                    <div class="flex items-center gap-3">
-                        <div class="step-badge ${stepClass}">
-                            ${isCompleted ? '<i class="fas fa-check"></i>' : (isActive ? '<i class="fas fa-spinner spin-slow"></i>' : idx + 1)}
-                        </div>
-                        <span class="text-sm ${isCompleted ? 'text-green-400' : (isActive ? 'text-blue-400 font-semibold' : 'text-gray-500')}">${step.name}</span>
+            document.getElementById('progressSteps').innerHTML = steps.map((s, i) => `
+                <div class="flex items-center gap-3">
+                    <div class="step-badge ${s.done ? 'step-done' : 'step-pending'}">
+                        ${s.done ? '<i class="fas fa-check"></i>' : i + 1}
                     </div>
-                `;
+                    <span class="text-sm ${s.done ? 'text-green-400' : 'text-gray-500'}">${s.name}</span>
+                </div>`).join('');
+        }
+
+        // ── Transcript display ────────────────────────────────────────────────
+        function displayTranscript(transcript) {
+            const content = document.getElementById('transcriptContent');
+            const segs = transcript.speaker_segments?.length
+                ? transcript.speaker_segments
+                : transcript.segments || [];
+
+            if (!segs.length) {
+                content.innerHTML = `<p class="text-gray-400">${transcript.text || 'No transcript available.'}</p>`;
+                return;
+            }
+
+            content.innerHTML = segs.map(seg => {
+                const speaker = seg.speaker || 'Unknown';
+                const text    = seg.text || '';
+                const ts      = seg.start != null ? `${formatTime(seg.start)}` : '';
+                return `<div class="border-l-2 border-blue-500 pl-4 py-2">
+                    <div class="flex items-center gap-2 mb-1">
+                        ${ts ? `<span class="text-xs text-gray-500">[${ts}]</span>` : ''}
+                        <span class="text-xs font-semibold text-blue-400">${speaker}</span>
+                    </div>
+                    <p class="text-sm text-gray-300">${text}</p>
+                </div>`;
             }).join('');
         }
 
-        // Display Transcript
-        function displayTranscript(transcript) {
-            const content = document.getElementById('transcriptContent');
-            if (Array.isArray(transcript)) {
-                content.innerHTML = transcript.map(seg => `
-                    <div class="border-l-2 border-blue-500 pl-4 py-2 text-gray-300">
-                        <span class="text-xs text-gray-500">[${seg.start?.toFixed(2) || '0:00'}s]</span>
-                        <span class="font-semibold text-blue-400 text-xs">${seg.speaker || 'Unknown'}</span>
-                        <p class="text-sm mt-1">${seg.text || seg}</p>
-                    </div>
-                `).join('');
-            } else {
-                content.innerHTML = `<p class="text-sm text-gray-300">${JSON.stringify(transcript, null, 2)}</p>`;
-            }
-        }
+        // ── MoM display ───────────────────────────────────────────────────────
+        // Each section knows the exact fields its objects contain:
+        //   key_points  → { timestamp, speaker, point }
+        //   decisions   → { timestamp, decision }
+        //   action_items→ { timestamp, owner, task }
+        //   agenda      → string[]
+        //   summary     → string
 
-        // Display MoM
         function displayMoM(mom) {
-            const content = document.getElementById('momContent');
-            if (typeof mom === 'string') {
-                content.innerHTML = `<p class="text-sm text-gray-300 whitespace-pre-wrap">${mom}</p>`;
-            } else {
-                let html = '';
-                if (mom.agenda) html += `<div><strong class="text-white">📋 Agenda:</strong> <p class="text-sm text-gray-300">${mom.agenda}</p></div>`;
-                if (mom.key_points) html += `<div><strong class="text-white">🔑 Key Points:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.key_points) ? mom.key_points : [mom.key_points]).map(p => `<li>${p}</li>`).join('')}</ul></div>`;
-                if (mom.decisions) html += `<div><strong class="text-white">✅ Decisions:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.decisions) ? mom.decisions : [mom.decisions]).map(d => `<li>${d}</li>`).join('')}</ul></div>`;
-                if (mom.action_items) html += `<div><strong class="text-white">📝 Action Items:</strong><ul class="text-sm text-gray-300 list-disc list-inside">${(Array.isArray(mom.action_items) ? mom.action_items : [mom.action_items]).map(a => `<li>${a}</li>`).join('')}</ul></div>`;
-                content.innerHTML = html || 'No data available';
+            const el = document.getElementById('momContent');
+            let html = '';
+
+            // Title
+            if (mom.title) {
+                html += `<h2 class="text-lg font-bold text-white mb-4">${mom.title}</h2>`;
             }
+
+            // Summary
+            if (mom.summary) {
+                html += `
+                <div class="bg-gray-700/50 rounded-lg p-4 mb-4">
+                    <h3 class="text-sm font-bold text-white mb-2">📝 Summary</h3>
+                    <p class="text-sm text-gray-300 leading-relaxed">${mom.summary}</p>
+                </div>`;
+            }
+
+            // Agenda  — array of strings
+            if (Array.isArray(mom.agenda) && mom.agenda.length) {
+                html += `
+                <div class="mb-4">
+                    <h3 class="text-sm font-bold text-white mb-2">📋 Agenda</h3>
+                    <ul class="space-y-1">
+                        ${mom.agenda.map(item =>
+                            `<li class="flex items-start gap-2 text-sm text-gray-300">
+                                <span class="text-blue-400 mt-0.5">•</span>
+                                <span>${typeof item === 'string' ? item : JSON.stringify(item)}</span>
+                            </li>`
+                        ).join('')}
+                    </ul>
+                </div>`;
+            }
+
+            // Key Points  — array of { timestamp, speaker, point }
+            if (Array.isArray(mom.key_points) && mom.key_points.length) {
+                html += `
+                <div class="mb-4">
+                    <h3 class="text-sm font-bold text-white mb-2">🔑 Key Points</h3>
+                    <div class="space-y-2">
+                        ${mom.key_points.map(kp => {
+                            const ts      = kp.timestamp || '';
+                            const speaker = kp.speaker   || '';
+                            const point   = kp.point     || (typeof kp === 'string' ? kp : '');
+                            return `<div class="bg-gray-700/40 rounded-lg px-3 py-2">
+                                <div class="flex items-center gap-2 mb-1">
+                                    ${ts      ? `<span class="text-xs text-blue-400 font-mono">[${ts}]</span>` : ''}
+                                    ${speaker ? `<span class="text-xs font-semibold text-purple-400">${speaker}</span>` : ''}
+                                </div>
+                                <p class="text-sm text-gray-300">${point}</p>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+            }
+
+            // Decisions  — array of { timestamp, decision }
+            if (Array.isArray(mom.decisions) && mom.decisions.length) {
+                html += `
+                <div class="mb-4">
+                    <h3 class="text-sm font-bold text-white mb-2">✅ Decisions</h3>
+                    <div class="space-y-2">
+                        ${mom.decisions.map(d => {
+                            const ts       = d.timestamp || '';
+                            const decision = d.decision  || (typeof d === 'string' ? d : '');
+                            return `<div class="flex items-start gap-2 bg-green-900/20 border border-green-800/40 rounded-lg px-3 py-2">
+                                ${ts ? `<span class="text-xs text-green-400 font-mono whitespace-nowrap mt-0.5">[${ts}]</span>` : ''}
+                                <p class="text-sm text-gray-300">${decision}</p>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+            }
+
+            // Action Items  — array of { timestamp, owner, task }
+            if (Array.isArray(mom.action_items) && mom.action_items.length) {
+                html += `
+                <div class="mb-4">
+                    <h3 class="text-sm font-bold text-white mb-2">📌 Action Items</h3>
+                    <div class="space-y-2">
+                        ${mom.action_items.map(a => {
+                            const ts    = a.timestamp || '';
+                            const owner = a.owner     || 'Unknown';
+                            const task  = a.task      || (typeof a === 'string' ? a : '');
+                            return `<div class="bg-yellow-900/20 border border-yellow-800/40 rounded-lg px-3 py-2">
+                                <div class="flex items-center gap-2 mb-1">
+                                    ${ts ? `<span class="text-xs text-yellow-400 font-mono">[${ts}]</span>` : ''}
+                                    <span class="text-xs font-semibold text-yellow-300">${owner}</span>
+                                </div>
+                                <p class="text-sm text-gray-300">${task}</p>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>`;
+            }
+
+            el.innerHTML = html || '<p class="text-gray-500 text-center py-8">No minutes data available.</p>';
         }
 
-        // Chat
+        // ── Chat ──────────────────────────────────────────────────────────────
+        document.getElementById('chatInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('sendChatBtn').click();
+        });
+
         document.getElementById('sendChatBtn').addEventListener('click', async () => {
             const input = document.getElementById('chatInput');
             const message = input.value.trim();
             if (!message || !currentJobId) return;
 
             const messagesDiv = document.getElementById('chatMessages');
-            
-            // Add user message
             messagesDiv.innerHTML += `
                 <div class="flex justify-end">
-                    <div class="bg-blue-600 text-white px-4 py-2 rounded-lg max-w-xs text-sm">
-                        ${message}
-                    </div>
-                </div>
-            `;
+                    <div class="bg-blue-600 text-white px-4 py-2 rounded-lg max-w-xs text-sm">${message}</div>
+                </div>`;
             input.value = '';
 
             try {
                 const response = await apiCall(`/api/v1/jobs/${currentJobId}/chat`, 'POST', { question: message });
-                
-                // Add AI response
                 messagesDiv.innerHTML += `
                     <div class="flex justify-start">
-                        <div class="bg-gray-700 text-gray-100 px-4 py-2 rounded-lg max-w-xs text-sm">
-                            ${response.answer || response.response || 'No response'}
-                        </div>
-                    </div>
-                `;
+                        <div class="bg-gray-700 text-gray-100 px-4 py-2 rounded-lg max-w-xs text-sm">${response.answer || 'No response'}</div>
+                    </div>`;
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            } catch (error) {
-                console.error('Chat error:', error);
+            } catch (err) {
+                console.error(err);
                 showToast('Failed to send message', 'error');
             }
         });
 
-        // Tab Switching
+        // ── Tabs ──────────────────────────────────────────────────────────────
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active', 'border-blue-500', 'text-white'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
-                
                 btn.classList.add('active', 'border-blue-500', 'text-white');
-                const tabId = btn.dataset.tab + '-tab';
-                document.getElementById(tabId).classList.remove('hidden');
+                document.getElementById(btn.dataset.tab + '-tab').classList.remove('hidden');
             });
         });
 
-        // Jobs List
+        // ── Jobs list ─────────────────────────────────────────────────────────
         function addJobToList(job) {
-            const jobsList = document.getElementById('jobsList');
-            if (jobsList.innerHTML.includes('No jobs yet')) {
-                jobsList.innerHTML = '';
-            }
+            const list = document.getElementById('jobsList');
+            if (list.querySelector('.text-gray-500')) list.innerHTML = '';
 
-            const existingJob = document.querySelector(`[data-job-id="${job.id}"]`);
-            const jobElement = `
-                <div data-job-id="${job.id}" class="p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-600 transition-colors border-l-2 ${job.id === currentJobId ? 'border-blue-500 bg-gray-600' : 'border-transparent'}">
-                    <div class="text-xs font-semibold text-white truncate">${job.filename || 'Meeting'}</div>
-                    <div class="text-xs text-gray-400 mt-1 flex items-center gap-2">
-                        <i class="fas fa-circle text-xs" style="color: ${job.status === 'completed' ? '#22c55e' : job.status === 'failed' ? '#ef4444' : '#f59e0b'}"></i>
-                        ${job.status}
-                    </div>
+            const id = job.job_id || job.id;
+            const existing = list.querySelector(`[data-job-id="${id}"]`);
+            const statusColour = job.status === 'completed' ? '#22c55e' : job.status === 'failed' ? '#ef4444' : '#f59e0b';
+            const html = `<div data-job-id="${id}" class="p-3 bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-600 transition-colors border-l-2 ${id === currentJobId ? 'border-blue-500' : 'border-transparent'}">
+                <div class="text-xs font-semibold text-white truncate">${job.filename || 'Meeting'}</div>
+                <div class="text-xs text-gray-400 mt-1 flex items-center gap-2">
+                    <i class="fas fa-circle text-xs" style="color:${statusColour}"></i>${job.status}
                 </div>
-            `;
+            </div>`;
 
-            if (existingJob) {
-                existingJob.replaceWith(document.createElement('div').innerHTML = jobElement.trim());
-                document.querySelector(`[data-job-id="${job.id}"]`).addEventListener('click', () => loadJobDetails(job.id));
+            if (existing) {
+                existing.outerHTML = html;
             } else {
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = jobElement;
-                jobsList.appendChild(tempDiv.firstChild);
-                jobsList.lastChild.addEventListener('click', () => loadJobDetails(job.id));
+                list.insertAdjacentHTML('beforeend', html);
             }
+            list.querySelector(`[data-job-id="${id}"]`).addEventListener('click', () => loadJobDetails(id));
         }
 
-        // Poll Job Status
-        async function pollJobStatus(jobId, maxAttempts = 120) {
+        // ── Poll ──────────────────────────────────────────────────────────────
+        function pollJobStatus(jobId, maxAttempts = 180) {
             let attempts = 0;
             const interval = setInterval(async () => {
                 attempts++;
@@ -490,37 +527,37 @@
                         clearInterval(interval);
                         await loadJobDetails(jobId);
                         showLoading(false);
-                        showToast('✓ Processing complete!', 'success');
+                        showToast('Processing complete!', 'success');
                     } else if (job.status === 'failed') {
                         clearInterval(interval);
                         showLoading(false);
-                        showToast('✗ Processing failed', 'error');
+                        showToast(`Processing failed: ${job.error || 'unknown error'}`, 'error');
                     }
-                } catch (error) {
-                    console.error('Poll error:', error);
-                }
+                } catch (err) { console.error('Poll error:', err); }
 
-                if (attempts >= maxAttempts) {
-                    clearInterval(interval);
-                    showLoading(false);
-                }
+                if (attempts >= maxAttempts) { clearInterval(interval); showLoading(false); }
             }, 2000);
         }
 
-        // Load Initial Jobs
-        async function loadInitialJobs() {
-            try {
-                const jobs = await apiCall('/api/v1/jobs');
-                if (Array.isArray(jobs) && jobs.length > 0) {
-                    jobs.forEach(job => addJobToList(job));
-                }
-            } catch (error) {
-                console.error('Error loading jobs:', error);
-            }
+        // ── Helpers ───────────────────────────────────────────────────────────
+        function formatTime(seconds) {
+            const s = Math.floor(seconds);
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            return h > 0
+                ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+                : `${m}:${String(sec).padStart(2,'0')}`;
         }
 
-        // Initialize
-        loadInitialJobs();
+        // ── Init ──────────────────────────────────────────────────────────────
+        (async () => {
+            try {
+                const result = await apiCall('/api/v1/jobs');
+                const jobs = result.jobs || (Array.isArray(result) ? result : []);
+                jobs.forEach(job => addJobToList(job));
+            } catch (err) { console.error('Error loading jobs:', err); }
+        })();
     </script>
 </body>
 </html>
