@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -49,6 +49,38 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# ── WebSocket Manager for Real-Time Updates ───────────────────────────────────
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, websocket: WebSocket, job_id: str):
+        await websocket.accept()
+        self.active_connections[job_id] = websocket
+
+    def disconnect(self, job_id: str):
+        if job_id in self.active_connections:
+            del self.active_connections[job_id]
+
+    async def send_progress(self, job_id: str, progress: Dict):
+        if job_id in self.active_connections:
+            try:
+                await self.active_connections[job_id].send_json(progress)
+            except Exception:
+                # Connection might be closed, remove it
+                self.disconnect(job_id)
+
+    async def broadcast(self, message: Dict):
+        """Broadcast to all connected clients"""
+        for connection in self.active_connections.values():
+            try:
+                await connection.send_json(message)
+            except Exception:
+                pass
+
+manager = ConnectionManager()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -57,10 +89,15 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
-# Mount static files
-static_path = Path(__file__).parent.parent / "frontend" / "static"
+# Mount static files (React build)
+static_path = Path(__file__).parent.parent / "frontend" / "build" / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+# Mount React app root
+react_path = Path(__file__).parent.parent / "frontend" / "build"
+if react_path.exists():
+    app.mount("/", StaticFiles(directory=str(react_path), html=True), name="react")
 
 # Mount clips directory
 clips_path = settings.clips_dir
@@ -283,6 +320,32 @@ def _video_streaming_response(video_path: Path, request: Request) -> StreamingRe
         return StreamingResponse(iter_full(), status_code=200, headers=headers)
 
 
+# ── Error handling helpers ──────────────────────────────────────────────────
+
+def _format_error_message(error: Exception) -> str:
+    """Format error messages for better user experience."""
+    error_str = str(error)
+
+    # Handle common error types with user-friendly messages
+    if "No module named" in error_str:
+        return f"Missing dependency: {error_str}. Please install required packages."
+    elif "CUDA" in error_str or "GPU" in error_str:
+        return f"GPU error: {error_str}. Try using CPU mode or check GPU drivers."
+    elif "HuggingFace" in error_str or "token" in error_str.lower():
+        return f"Authentication error: {error_str}. Check your HuggingFace token."
+    elif "file not found" in error_str.lower():
+        return f"File error: {error_str}. Check if the file exists and is accessible."
+    elif "permission" in error_str.lower():
+        return f"Permission error: {error_str}. Check file permissions."
+    elif "memory" in error_str.lower():
+        return f"Memory error: {error_str}. Try processing smaller files or use CPU mode."
+    elif "timeout" in error_str.lower():
+        return f"Timeout error: {error_str}. The operation took too long to complete."
+    else:
+        # For unknown errors, provide a generic but helpful message
+        return f"Processing error: {error_str}. Check logs for details."
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
@@ -290,6 +353,16 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
     def update(status: str, step: str, progress: int):
         jobs[job_id].update({"status": status, "step": step, "progress": progress})
         _save_jobs_to_disk()  # Auto-save after each status update
+
+        # Send real-time progress update via WebSocket
+        asyncio.run(manager.send_progress(job_id, {
+            "type": "progress",
+            "job_id": job_id,
+            "status": status,
+            "step": step,
+            "progress": progress,
+            "timestamp": datetime.utcnow().isoformat()
+        }))
 
     try:
         job_dir = settings.jobs_dir / job_id
@@ -378,12 +451,26 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         print(f"  ✓ Pipeline complete for job {job_id}")
 
     except Exception as e:
+        error_msg = _format_error_message(e)
         jobs[job_id].update({
             "status": "failed",
-            "step":   f"Failed: {str(e)}",
+            "step":   f"Failed: {error_msg}",
             "progress": 0,
-            "error":  str(e),
+            "error":  error_msg,
+            "failed_at": datetime.utcnow().isoformat(),
         })
+        _save_jobs_to_disk()
+
+        # Send error update via WebSocket
+        asyncio.run(manager.send_progress(job_id, {
+            "type": "error",
+            "job_id": job_id,
+            "status": "failed",
+            "error": error_msg,
+            "timestamp": datetime.utcnow().isoformat()
+        }))
+
+        print(f"  ❌ Pipeline failed for job {job_id}: {error_msg}")
         raise
 
 
@@ -563,11 +650,29 @@ async def health():
 
 @app.get("/", tags=["Health"])
 async def root():
-    from fastapi.responses import FileResponse
-    app_path = Path(__file__).parent.parent / "frontend" / "static" / "index.html"
-    if app_path.exists():
-        return FileResponse(app_path, media_type="text/html")
+    # Let React handle the root route
+    react_index = Path(__file__).parent.parent / "frontend" / "build" / "index.html"
+    if react_index.exists():
+        from fastapi.responses import FileResponse
+        return FileResponse(react_index, media_type="text/html")
+
+    # Fallback for development
     return {"name": "Meeting Intelligence Platform", "version": "1.0.0", "docs": "/docs"}
+
+
+# ── WebSocket for Real-Time Updates ───────────────────────────────────────────
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await manager.connect(websocket, job_id)
+    try:
+        while True:
+            # Keep connection alive and wait for client messages
+            data = await websocket.receive_text()
+            # Echo back for connection health
+            await websocket.send_json({"type": "ping", "data": data})
+    except WebSocketDisconnect:
+        manager.disconnect(job_id)
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────

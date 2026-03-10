@@ -27,8 +27,46 @@ const UI = {
     document.getElementById('uploadOverlay').classList.remove('visible');
   },
 
-  setProgress(pct) {
-    document.getElementById('overlayProgressFill').style.width = `${pct}%`;
+  setProgress(pct, step = null, eta = null) {
+    const fill = document.getElementById('overlayProgressFill');
+    const title = document.getElementById('overlayTitle');
+    const sub = document.getElementById('overlaySub');
+
+    // Update progress bar
+    fill.style.width = `${pct}%`;
+
+    // Update step information
+    if (step) {
+      title.textContent = step;
+    }
+
+    // Update ETA information
+    if (eta) {
+      sub.textContent = eta;
+    } else if (pct < 100) {
+      // Show encouraging messages based on progress
+      const messages = [
+        "Starting up...",
+        "Processing your meeting...",
+        "Almost there...",
+        "Finalizing results..."
+      ];
+      const messageIndex = Math.floor((pct / 100) * messages.length);
+      sub.textContent = messages[Math.min(messageIndex, messages.length - 1)];
+    }
+  },
+
+  /* ── Enhanced progress with real-time updates ────────────────── */
+  updateProcessingStatus(status, step, progress) {
+    // Update overlay
+    this.setProgress(progress, step);
+
+    // Update pipeline status indicator
+    this.updatePipeline(status);
+
+    // Add visual feedback for different stages
+    const overlay = document.getElementById('uploadOverlay');
+    overlay.className = `upload-overlay status-${status}`;
   },
 
   /* ── Show/hide main panels ───────────────────────────────────── */

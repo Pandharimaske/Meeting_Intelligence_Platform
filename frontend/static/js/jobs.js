@@ -55,36 +55,10 @@ const Jobs = (() => {
     }
   }
 
-  /* ── Polling ──────────────────────────────────────────────────── */
+  /* ── Real-time updates via WebSocket ─────────────────────────── */
   function startPolling(jobId) {
-    State.stopPoll();
-    let attempts = 0;
-    const interval = setInterval(async () => {
-      attempts++;
-      try {
-        const job = await Api.job(jobId);
-        UI.updatePipeline(job.status);
-        _upsertCard(job);
-
-        const pct = _progressPct(job.status);
-        UI.setProgress(pct);
-
-        if (job.status === 'completed') {
-          clearInterval(interval);
-          await loadAndRender(jobId);
-          UI.hideOverlay();
-          UI.toast('Processing complete! ✨', 'success');
-        } else if (job.status === 'failed') {
-          clearInterval(interval);
-          UI.hideOverlay();
-          UI.toast(`Failed: ${job.error || 'unknown error'}`, 'error');
-        }
-      } catch (e) { console.error('poll error', e); }
-
-      if (attempts > 200) clearInterval(interval);
-    }, 2500);
-
-    State.set('pollInterval', interval);
+    // Use WebSocket for real-time updates instead of polling
+    WebSocketManager.connect(jobId);
   }
 
   /* ── Internal helpers ─────────────────────────────────────────── */
@@ -145,5 +119,30 @@ const Jobs = (() => {
     });
   }
 
-  return { loadAll, loadAndRender, startPolling };
+  /* ── Update job card from WebSocket ───────────────────────────── */
+  function updateJobCard(jobId, updates) {
+    const card = document.querySelector(`[data-job-id="${jobId}"]`);
+    if (!card) return;
+
+    // Update status
+    if (updates.status) {
+      card.className = `job-card status-${updates.status}`;
+      const statusEl = card.querySelector('.job-status');
+      if (statusEl) statusEl.textContent = updates.status;
+    }
+
+    // Update step
+    if (updates.step) {
+      const stepEl = card.querySelector('.job-step');
+      if (stepEl) stepEl.textContent = updates.step;
+    }
+
+    // Update progress
+    if (updates.progress !== undefined) {
+      const progressEl = card.querySelector('.job-progress');
+      if (progressEl) progressEl.style.width = `${updates.progress}%`;
+    }
+  }
+
+  return { loadAll, loadAndRender, startPolling, updateJobCard };
 })();
