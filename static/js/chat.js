@@ -42,17 +42,14 @@ const Chat = (() => {
       _appendBubble('system', answer);
       State.pushChat('assistant', answer);
 
-      // Only show clips inline if user explicitly asked for a clip
       if (res.wants_clip) {
-        Sources.clear();  // Hide side panel
+        Sources.clear();
         if (res.sources?.length) {
-          _appendClipSources(res.sources, jobId);
+          _appendClipPanel(res.sources, jobId);
         } else {
-          // User asked for clip but no sources found
           UI.toast('No video segments found for your query. Try being more specific.', 'info');
         }
       } else {
-        // Text-only response: don't show sources
         Sources.clear();
       }
 
@@ -66,66 +63,65 @@ const Chat = (() => {
     _setBtnState(false);
   }
 
-  function _appendClipSources(sources, jobId) {
+  /* ── Clip panel: all clips grouped ────────────────────────────── */
+  function _appendClipPanel(sources, jobId) {
     const msgs = document.getElementById('chatMessages');
-    
+
+    const header = document.createElement('div');
+    header.className = 'clip-panel-header fade-up';
+    header.innerHTML = `
+      <i class="fas fa-film"></i>
+      <span>${sources.length} clip${sources.length > 1 ? 's' : ''} found</span>
+      <span class="clip-panel-hint">Choose one to watch</span>`;
+    msgs.appendChild(header);
+
     sources.forEach((s, idx) => {
-      const start = s.start ?? 0;
-      const end = s.end ?? 0;
-      const label = `${s.start_timestamp || _fmtSecs(start)} – ${s.end_timestamp || _fmtSecs(end)}`;
-      const hasClip = jobId && (end - start) > 0;
-      const speaker = s.primary_speaker && s.primary_speaker !== 'Unknown' 
-        ? s.primary_speaker : 'Unknown';
+      const start    = s.start ?? 0;
+      const end      = s.end   ?? 0;
+      const dur      = Math.round(end - start);
+      const label    = `${s.start_timestamp || _fmtSecs(start)} – ${s.end_timestamp || _fmtSecs(end)}`;
+      const speaker  = (s.primary_speaker && s.primary_speaker !== 'Unknown') ? s.primary_speaker : null;
+      const hasClip  = jobId && dur > 0;
+      const matchPct = s.score ? Math.round(s.score * 100) : null;
 
-      const div = document.createElement('div');
-      div.className = 'chat-row system fade-up';
-      div.style.marginTop = idx === 0 ? '12px' : '8px';
+      const accents = ['--accent', '--emerald', '--amber', '--violet', '--sky', '--rose'];
+      const accent  = accents[idx % accents.length];
 
-      div.innerHTML = `
-        <div class="chat-avatar"><i class="fas fa-quote-left" style="font-size:10px;"></i></div>
-        <div class="chat-clip-card">
-          <div class="clip-header">
-            <span class="clip-time">
-              <i class="fas fa-clock" style="font-size:10px;margin-right:3px;"></i>
-              ${_esc(label)}
-            </span>
-            <span class="clip-speaker">${_esc(speaker)}</span>
-            ${s.score ? `<span class="clip-score">${(s.score * 100).toFixed(0)}% match</span>` : ''}
+      const card = document.createElement('div');
+      card.className = 'clip-result-card fade-up';
+      card.style.setProperty('--card-accent', `var(${accent})`);
+      card.style.animationDelay = `${idx * 70}ms`;
+
+      card.innerHTML = `
+        <div class="crc-index">${idx + 1}</div>
+        <div class="crc-body">
+          <div class="crc-meta">
+            <span class="crc-time"><i class="fas fa-clock"></i> ${_esc(label)}</span>
+            <span class="crc-dur">${dur}s</span>
+            ${speaker  ? `<span class="crc-speaker">${_esc(speaker)}</span>` : ''}
+            ${matchPct ? `<span class="crc-score">${matchPct}% match</span>` : ''}
           </div>
-          <div class="clip-text">${_esc(s.text || '')}</div>
+          <div class="crc-text">${_esc(s.text || '')}</div>
           ${hasClip ? `
-          <div class="clip-actions">
-            <button class="btn-play-clip"
-                    onclick="Clips.playClip(${start}, ${end}, '${_esc(label)}')"
-                    title="Generate and play this clip">
+          <div class="crc-actions">
+            <button class="crc-btn-play"
+                    onclick="Clips.playClip(${start}, ${end}, '${_escAttr(label)}')"
+                    title="Play clip">
               <i class="fas fa-play"></i> Play Clip
             </button>
-            <button class="btn-seek"
+            <button class="crc-btn-seek"
                     onclick="Clips.seekMain(${start})"
-                    title="Jump to this moment in the full video">
-              <i class="fas fa-forward"></i> Seek
+                    title="Jump to this moment">
+              <i class="fas fa-forward"></i> Seek in Video
             </button>
-          </div>` : ''}
+          </div>` : `
+          <div class="crc-no-video"><i class="fas fa-info-circle"></i> No video — text only</div>`}
         </div>`;
 
-      msgs.appendChild(div);
+      msgs.appendChild(card);
     });
 
     msgs.scrollTop = msgs.scrollHeight;
-  }
-
-  function _fmtSecs(secs) {
-    const s = Math.floor(secs || 0);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    return h > 0
-      ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
-      : `${m}:${String(sec).padStart(2,'0')}`;
-  }
-
-  function _esc(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
   /* ── DOM helpers ──────────────────────────────────────────────── */
@@ -133,10 +129,10 @@ const Chat = (() => {
     const div = document.createElement('div');
     div.className = `chat-row ${role} fade-up`;
     const icon = role === 'user' ? 'fa-user' : 'fa-brain';
-    const formattedText = role === 'system' ? _formatText(text) : _esc(text);
+    const formattedText = role === 'system' ? _linkify(_formatText(text)) : _esc(text);
     div.innerHTML = `
       <div class="chat-avatar"><i class="fas ${icon}"></i></div>
-      <div class="chat-bubble">${_linkify(formattedText)}</div>`;
+      <div class="chat-bubble">${formattedText}</div>`;
     const msgs = document.getElementById('chatMessages');
     const empty = msgs.querySelector('.chat-empty');
     if (empty) empty.remove();
@@ -145,48 +141,87 @@ const Chat = (() => {
   }
 
   function _formatText(text) {
-    let formatted = _esc(text);
+    let f = _esc(text);
 
-    // Convert markdown headers: # Header → <h4>Header</h4>
-    formatted = formatted.replace(/^### (.*?)$/gm, '<h4 class="chat-h4">$1</h4>');
-    formatted = formatted.replace(/^## (.*?)$/gm, '<h3 class="chat-h3">$1</h3>');
-    formatted = formatted.replace(/^# (.*?)$/gm, '<h2 class="chat-h2">$1</h2>');
+    // Headers
+    f = f.replace(/^### (.*?)$/gm, '<h4 class="chat-h4">$1</h4>');
+    f = f.replace(/^## (.*?)$/gm,  '<h3 class="chat-h3">$1</h3>');
+    f = f.replace(/^# (.*?)$/gm,   '<h2 class="chat-h2">$1</h2>');
 
-    // Convert markdown bold: **text** → <strong>text</strong>
-    formatted = formatted.replace(/\*\*(.*?)\*\*/g, '<strong class="highlight-term">$1</strong>');
-    
-    // Convert markdown italic: *text* → <em>text</em>
-    formatted = formatted.replace(/\*(.*?)\*/g, '<em class="text-emphasis">$1</em>');
+    // Bold / italic / code
+    f = f.replace(/\*\*(.*?)\*\*/g, '<strong class="highlight-term">$1</strong>');
+    f = f.replace(/\*(.*?)\*/g,     '<em class="text-emphasis">$1</em>');
+    f = f.replace(/`(.*?)`/g,       '<code class="inline-code">$1</code>');
 
-    // Convert markdown code: `code` → <code>code</code>
-    formatted = formatted.replace(/`(.*?)`/g, '<code class="inline-code">$1</code>');
+    // FIX: bullet lists — collect ALL consecutive li's into one ul
+    // Step 1: convert bullet lines to <li>
+    f = f.replace(/^[ \t]*[•\-\*]\s+(.*?)$/gm, '<li class="chat-list-item">$1</li>');
+    // Step 2: wrap consecutive <li> blocks in <ul>
+    f = f.replace(/(<li class="chat-list-item">(?:.*?)<\/li>\n?)+/g,
+      match => `<ul class="chat-list">${match}</ul>`);
 
-    // Convert bullet lists: • or - at start of line
-    formatted = formatted.replace(/^[\s]*[•\-]\s+(.*?)$/gm, '<li class="chat-list-item">$1</li>');
-    formatted = formatted.replace(/(<li[^>]*>.*?<\/li>)/s, '<ul class="chat-list">$1</ul>');
+    // FIX: numbered lists — same pattern
+    f = f.replace(/^[ \t]*\d+\.\s+(.*?)$/gm, '<li class="chat-list-item chat-numbered">$1</li>');
+    f = f.replace(/(<li class="chat-list-item chat-numbered">(?:.*?)<\/li>\n?)+/g,
+      match => `<ol class="chat-list">${match}</ol>`);
 
-    // Convert numbered lists
-    formatted = formatted.replace(/^(\d+)\.\s+(.*?)$/gm, '<li class="chat-list-item chat-numbered">$2</li>');
-    formatted = formatted.replace(/(<li[^>]*chat-numbered[^>]*>.*?<\/li>)/s, '<ol class="chat-list">$1</ol>');
-
-    // Highlight important keywords (decisions, actions, metrics)
-    const keywords = [
-      'decision', 'decided', 'action item', 'assigned to', 'owner:', 'deadline',
-      'critical', 'important', 'urgent', 'must', 'required', 'mandatory',
-      'key point', 'conclusion', 'recommendation', 'note:', 'warning',
-      'approved', 'rejected', 'pending', 'completed', 'in progress'
-    ];
-    
-    keywords.forEach(kw => {
-      const regex = new RegExp(`(${kw})(?=[\\s\\.,;:!?]|$)`, 'gi');
-      formatted = formatted.replace(regex, '<mark class="kw-highlight">$1</mark>');
+    // Keyword highlights
+    ['decision','decided','action item','assigned to','owner:','deadline',
+     'critical','important','urgent','approved','rejected','completed'
+    ].forEach(kw => {
+      f = f.replace(new RegExp(`(${kw})(?=[\\s\\.,;:!?]|$)`, 'gi'),
+                    '<mark class="kw-highlight">$1</mark>');
     });
 
-    // Convert line breaks to proper spacing
-    formatted = formatted.replace(/\n\n+/g, '</p><p class="chat-para">');
-    formatted = '<p class="chat-para">' + formatted + '</p>';
+    // Paragraphs — split on double newlines
+    f = f.replace(/\n\n+/g, '</p><p class="chat-para">');
+    // Single newlines → <br>
+    f = f.replace(/\n/g, '<br>');
+    f = '<p class="chat-para">' + f + '</p>';
 
-    return formatted;
+    return f;
+  }
+
+  /* ── Timestamp linkifier ──────────────────────────────────────── */
+  function _linkify(html) {
+    const TS = '(\\d{1,2}:\\d{2}(?::\\d{2})?)';
+
+    // Range: [HH:MM:SS - HH:MM:SS]  (dash, en-dash, em-dash variants)
+    const rangeRe = new RegExp(
+      `\\[${TS}\\s*(?:-|–|—|&ndash;|&#8211;|&#8212;)\\s*${TS}\\]`, 'g'
+    );
+    html = html.replace(rangeRe, (_, t1, t2) => {
+      const s1 = _tsToSecs(t1);
+      const s2 = _tsToSecs(t2);
+      const jobId = State.get('currentJobId');
+      return `<span class="ts-range-pill" title="Segment ${t1} – ${t2}">
+        <span class="ts-pill-icon"><i class="fas fa-clock"></i></span>
+        <span class="ts-pill-label">${t1} – ${t2}</span>
+        <button class="ts-pill-seek" onclick="Video.seekTo('${t1}')" title="Seek to ${t1}">
+          <i class="fas fa-forward"></i>
+        </button>
+        ${jobId ? `<button class="ts-pill-clip" onclick="Clips.playClip(${s1},${s2},'${t1} – ${t2}')" title="Play clip">
+          <i class="fas fa-play"></i>
+        </button>` : ''}
+      </span>`;
+    });
+
+    // Single timestamp: [HH:MM:SS]
+    const singleRe = new RegExp(`\\[${TS}\\]`, 'g');
+    html = html.replace(singleRe, (_, ts) =>
+      `<span class="ts-single-pill" onclick="Video.seekTo('${ts}')" title="Seek to ${ts}">
+        <i class="fas fa-clock"></i> ${ts}
+      </span>`
+    );
+
+    return html;
+  }
+
+  function _tsToSecs(ts) {
+    const parts = ts.split(':').map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    return 0;
   }
 
   function _appendTyping() {
@@ -196,7 +231,7 @@ const Chat = (() => {
     div.className = 'chat-row system fade-up';
     div.innerHTML = `
       <div class="chat-avatar"><i class="fas fa-brain"></i></div>
-      <div class="chat-bubble" style="padding:12px 16px">
+      <div class="chat-bubble chat-bubble-typing">
         <div class="chat-typing"><span></span><span></span><span></span></div>
       </div>`;
     const msgs = document.getElementById('chatMessages');
@@ -217,26 +252,48 @@ const Chat = (() => {
 
   function _emptyHtml() {
     return `<div class="chat-empty">
-      <i class="fas fa-comments"></i>
-      <span>Ask anything about the meeting</span>
+      <div class="chat-empty-icon"><i class="fas fa-comments"></i></div>
+      <div class="chat-empty-title">Ask about this meeting</div>
+      <div class="chat-empty-hints">
+        <span class="chat-hint" onclick="Chat._fillHint('Summarise the meeting')">Summarise the meeting</span>
+        <span class="chat-hint" onclick="Chat._fillHint('What decisions were made?')">What decisions were made?</span>
+        <span class="chat-hint" onclick="Chat._fillHint('Show me clips of key moments')">Show me clips of key moments</span>
+        <span class="chat-hint" onclick="Chat._fillHint('What are the action items?')">What are the action items?</span>
+      </div>
     </div>`;
+  }
+
+  /* Public: used by hint chips in the empty state */
+  function _fillHint(text) {
+    const input = document.getElementById('chatInput');
+    input.value = text;
+    input.focus();
+  }
+
+  function _fmtSecs(secs) {
+    const s = Math.floor(secs || 0);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      : `${m}:${String(sec).padStart(2,'0')}`;
   }
 
   function _esc(str) {
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  /* Convert [HH:MM:SS] timestamp refs to clickable seek spans */
-  function _linkify(text) {
-    return text.replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g,
-      (_, ts) => `<span class="chat-ts-link" onclick="Video.seekTo('${ts}')" title="Seek to ${ts}">${ts}</span>`);
+  function _escAttr(str) {
+    return String(str)
+      .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/\n/g,' ');
   }
 
-  return { init, resetUI };
+  return { init, resetUI, _fillHint };
 })();
 
 
-/* ── Sources — right-panel source cards with clip retrieval ──────── */
+/* ── Sources — right-panel source cards ─────────────────────────── */
 const Sources = (() => {
 
   function render(sources) {
@@ -256,12 +313,11 @@ const Sources = (() => {
           <div class="source-meta">
             <span class="source-ts"
                   onclick="Video.seekTo('${s.start_timestamp || _fmtSecs(start)}')"
-                  title="Seek to ${s.start_timestamp || ''}"
+                  title="Seek to this moment"
                   style="cursor:pointer">
-              <i class="fas fa-clock" style="font-size:9px;margin-right:3px"></i>
-              ${_esc(label)}
+              <i class="fas fa-clock"></i> ${_esc(label)}
             </span>
-            ${s.score ? `<span class="source-score">${(s.score * 100).toFixed(0)}% match</span>` : ''}
+            ${s.score ? `<span class="source-score">${(s.score * 100).toFixed(0)}%</span>` : ''}
             ${s.primary_speaker && s.primary_speaker !== 'Unknown'
               ? `<span class="source-speaker">${_esc(s.primary_speaker)}</span>` : ''}
           </div>
@@ -269,13 +325,13 @@ const Sources = (() => {
           ${hasClip ? `
           <div class="source-clip-actions">
             <button class="source-clip-btn"
-                    onclick="Clips.playClip(${start}, ${end}, '${_esc(label)}')"
-                    title="Generate and play this clip">
-              <i class="fas fa-scissors"></i> Play Clip
+                    onclick="Clips.playClip(${start}, ${end}, '${_escAttr(label)}')"
+                    title="Play clip">
+              <i class="fas fa-scissors"></i> Clip
             </button>
             <button class="source-seek-btn"
                     onclick="Clips.seekMain(${start})"
-                    title="Jump to this moment in the full video">
+                    title="Seek in full video">
               <i class="fas fa-forward"></i> Seek
             </button>
           </div>` : ''}
@@ -291,6 +347,11 @@ const Sources = (() => {
 
   function _esc(str) {
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function _escAttr(str) {
+    return String(str)
+      .replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/\n/g,' ');
   }
 
   function _fmtSecs(secs) {

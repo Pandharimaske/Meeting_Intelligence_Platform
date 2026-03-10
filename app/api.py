@@ -10,6 +10,11 @@ Pipeline per upload:
   4. Chunks → FAISS vector store  (rich metadata for video clipping)
   5. Vector store + RAG → MoM (Minutes of Meeting)
   6. Vector store kept in memory for /chat endpoint
+
+Re-run endpoints (skip the slow transcription step):
+  POST /api/v1/jobs/{job_id}/rerun/chunks   → re-chunk from saved transcript
+  POST /api/v1/jobs/{job_id}/rerun/index    → re-embed from saved chunks
+  POST /api/v1/jobs/{job_id}/rerun/mom      → re-generate MoM from saved index
 """
 
 import uuid
@@ -382,6 +387,173 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         raise
 
 
+# ── Re-run helpers (checkpoint-based) ────────────────────────────────────────
+
+def _rerun_from_chunks(job_id: str) -> None:
+    """
+    Re-run Step 2 onwards (chunk → embed → MoM) using the saved transcript.
+    Skips the slow Whisper transcription entirely.
+    Called when: chunking logic changed, chunk_max_words tuned, etc.
+    """
+    def update(status: str, step: str, progress: int):
+        jobs[job_id].update({"status": status, "step": step, "progress": progress})
+        _save_jobs_to_disk()
+
+    job_dir = settings.jobs_dir / job_id
+
+    try:
+        # Reload transcript from memory (already persisted in jobs.json)
+        transcript = jobs[job_id].get("transcript")
+        if not transcript:
+            raise RuntimeError("No saved transcript found. Cannot re-chunk without a transcript.")
+
+        segments = transcript.get("segments", [])
+        if not segments:
+            raise RuntimeError("Transcript has no segments.")
+
+        update("chunking", "♻️  Re-chunking from saved transcript…", 40)
+        chunker = TranscriptChunker(
+            max_chunk_words=settings.chunk_max_words,
+            overlap_segments=settings.chunk_overlap_segments,
+        )
+        chunks = chunker.chunk_from_segments(segments)
+        jobs[job_id]["chunk_count"] = len(chunks)
+
+        with open(job_dir / "chunks.json", "w") as f:
+            json.dump(chunks, f, indent=2, default=str)
+
+        print(f"  ✓ Re-chunked: {len(chunks)} chunks")
+
+        update("indexing", "♻️  Re-embedding chunks into FAISS…", 65)
+        store = MeetingVectorStore(model_name=settings.embedding_model)
+        store.build(chunks, meeting_id=job_id)
+        store.save(str(job_dir / "vector_store"), meeting_id=job_id)
+        vector_stores[job_id] = store
+
+        update("generating_mom", "♻️  Re-generating MoM…", 85)
+        mom_path = str(job_dir / "mom.json")
+
+        if settings.llm_backend == "template":
+            from src.report_generation.mom_generator import MoMGenerator
+            gen = MoMGenerator(backend="template")
+            mom = gen.generate(chunks, output_path=mom_path)
+        else:
+            rag = _make_rag(store)
+            mom = rag.generate(output_path=mom_path)
+
+        jobs[job_id]["mom"] = mom
+        jobs[job_id]["mom_available"] = True
+        jobs[job_id].update({
+            "status": "completed", "step": "Done", "progress": 100,
+            "completed_at": datetime.utcnow().isoformat(),
+        })
+        _save_jobs_to_disk()
+        print(f"  ✓ Re-run (from chunks) complete for job {job_id}")
+
+    except Exception as e:
+        jobs[job_id].update({"status": "failed", "step": f"Re-run failed: {e}", "progress": 0, "error": str(e)})
+        _save_jobs_to_disk()
+        raise
+
+
+def _rerun_from_index(job_id: str) -> None:
+    """
+    Re-run Step 3 onwards (embed → MoM) using the saved chunks.json.
+    Skips transcription AND chunking.
+    Called when: embedding model changed, RAG score_threshold tuned, etc.
+    """
+    def update(status: str, step: str, progress: int):
+        jobs[job_id].update({"status": status, "step": step, "progress": progress})
+        _save_jobs_to_disk()
+
+    job_dir = settings.jobs_dir / job_id
+    chunks_file = job_dir / "chunks.json"
+
+    try:
+        if not chunks_file.exists():
+            raise RuntimeError("No chunks.json found. Run re-chunk first.")
+
+        with open(chunks_file) as f:
+            chunks = json.load(f)
+
+        update("indexing", "♻️  Re-embedding saved chunks into FAISS…", 60)
+        store = MeetingVectorStore(model_name=settings.embedding_model)
+        store.build(chunks, meeting_id=job_id)
+        store.save(str(job_dir / "vector_store"), meeting_id=job_id)
+        vector_stores[job_id] = store
+
+        update("generating_mom", "♻️  Re-generating MoM from new index…", 85)
+        mom_path = str(job_dir / "mom.json")
+
+        if settings.llm_backend == "template":
+            from src.report_generation.mom_generator import MoMGenerator
+            gen = MoMGenerator(backend="template")
+            mom = gen.generate(chunks, output_path=mom_path)
+        else:
+            rag = _make_rag(store)
+            mom = rag.generate(output_path=mom_path)
+
+        jobs[job_id]["mom"] = mom
+        jobs[job_id]["mom_available"] = True
+        jobs[job_id].update({
+            "status": "completed", "step": "Done", "progress": 100,
+            "completed_at": datetime.utcnow().isoformat(),
+        })
+        _save_jobs_to_disk()
+        print(f"  ✓ Re-run (from index) complete for job {job_id}")
+
+    except Exception as e:
+        jobs[job_id].update({"status": "failed", "step": f"Re-run failed: {e}", "progress": 0, "error": str(e)})
+        _save_jobs_to_disk()
+        raise
+
+
+def _rerun_mom_only(job_id: str) -> None:
+    """
+    Re-run Step 4 only (MoM generation) using the existing FAISS index.
+    The fastest re-run — skips transcription, chunking, AND embedding.
+    Called when: MoM prompts changed, LLM backend switched, temperature tuned, etc.
+    """
+    def update(status: str, step: str, progress: int):
+        jobs[job_id].update({"status": status, "step": step, "progress": progress})
+        _save_jobs_to_disk()
+
+    job_dir = settings.jobs_dir / job_id
+
+    try:
+        update("generating_mom", "♻️  Re-generating MoM from saved index…", 75)
+
+        store = _get_store(job_id)  # loads from disk if not in memory
+        mom_path = str(job_dir / "mom.json")
+
+        if settings.llm_backend == "template":
+            chunks_file = job_dir / "chunks.json"
+            if not chunks_file.exists():
+                raise RuntimeError("No chunks.json found.")
+            with open(chunks_file) as f:
+                chunks = json.load(f)
+            from src.report_generation.mom_generator import MoMGenerator
+            gen = MoMGenerator(backend="template")
+            mom = gen.generate(chunks, output_path=mom_path)
+        else:
+            rag = _make_rag(store)
+            mom = rag.generate(output_path=mom_path)
+
+        jobs[job_id]["mom"] = mom
+        jobs[job_id]["mom_available"] = True
+        jobs[job_id].update({
+            "status": "completed", "step": "Done", "progress": 100,
+            "completed_at": datetime.utcnow().isoformat(),
+        })
+        _save_jobs_to_disk()
+        print(f"  ✓ Re-run (MoM only) complete for job {job_id}")
+
+    except Exception as e:
+        jobs[job_id].update({"status": "failed", "step": f"Re-run failed: {e}", "progress": 0, "error": str(e)})
+        _save_jobs_to_disk()
+        raise
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/health", tags=["Health"])
@@ -457,6 +629,125 @@ async def list_jobs(status: Optional[str] = None):
 @app.get("/api/v1/jobs/{job_id}", tags=["Jobs"])
 async def get_job(job_id: str):
     return _job_detail(job_id, _get_job_or_404(job_id))
+
+
+# ── Re-run Endpoints (checkpoint-based, skip transcription) ──────────────────
+
+@app.post("/api/v1/jobs/{job_id}/rerun/chunks", tags=["Re-run"])
+async def rerun_from_chunks(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Re-run from Step 2: re-chunk → re-embed → re-generate MoM.
+
+    Use this when you change:
+    - Chunking logic (TranscriptChunker)
+    - chunk_max_words or chunk_overlap_segments in config
+    - Embedding model
+    - MoM prompts or LLM backend
+
+    ✅ Skips: Whisper transcription (the slow part)
+    ⏱️  Typical time saved: 90-95% vs full re-upload
+    """
+    job = _get_job_or_404(job_id)
+    if not job.get("transcript_available"):
+        raise HTTPException(
+            status_code=400,
+            detail="No transcript found for this job. Cannot re-run without a saved transcript."
+        )
+
+    jobs[job_id].update({
+        "status": "chunking", "step": "♻️  Re-running from chunks…",
+        "progress": 35, "error": None,
+    })
+    _save_jobs_to_disk()
+
+    loop = asyncio.get_event_loop()
+    background_tasks.add_task(loop.run_in_executor, _executor, _rerun_from_chunks, job_id)
+
+    return {
+        "job_id": job_id,
+        "message": "Re-run started from chunking step. Transcription skipped.",
+        "skipped": ["transcription"],
+        "running":  ["chunking", "indexing", "mom_generation"],
+    }
+
+
+@app.post("/api/v1/jobs/{job_id}/rerun/index", tags=["Re-run"])
+async def rerun_from_index(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Re-run from Step 3: re-embed saved chunks → re-generate MoM.
+
+    Use this when you change:
+    - Embedding model (embedding_model in config)
+    - RAG score_threshold or top_k
+    - MoM prompts or LLM backend
+
+    ✅ Skips: Whisper transcription + chunking
+    ⏱️  Typical time saved: 95%+ vs full re-upload
+    """
+    job = _get_job_or_404(job_id)
+    chunks_file = settings.jobs_dir / job_id / "chunks.json"
+
+    if not chunks_file.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No chunks.json found. Run /rerun/chunks first."
+        )
+
+    jobs[job_id].update({
+        "status": "indexing", "step": "♻️  Re-running from embedding step…",
+        "progress": 55, "error": None,
+    })
+    _save_jobs_to_disk()
+
+    loop = asyncio.get_event_loop()
+    background_tasks.add_task(loop.run_in_executor, _executor, _rerun_from_index, job_id)
+
+    return {
+        "job_id": job_id,
+        "message": "Re-run started from embedding step. Transcription + chunking skipped.",
+        "skipped": ["transcription", "chunking"],
+        "running":  ["indexing", "mom_generation"],
+    }
+
+
+@app.post("/api/v1/jobs/{job_id}/rerun/mom", tags=["Re-run"])
+async def rerun_mom_only(job_id: str, background_tasks: BackgroundTasks):
+    """
+    Re-run Step 4 only: re-generate MoM from the existing FAISS index.
+
+    Use this when you change:
+    - MoM system prompt or section prompts (rag_mom_generator.py)
+    - LLM backend or model (llm_backend, llm_model in config)
+    - LLM temperature or max_tokens
+    - RAG score_threshold or top_k
+
+    ✅ Skips: Transcription + chunking + embedding (everything except LLM call)
+    ⏱️  Fastest re-run — usually completes in under 60 seconds
+    """
+    job = _get_job_or_404(job_id)
+    store_path = _get_vector_store_path(job_id)
+
+    if not store_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No FAISS index found. Run /rerun/index or /rerun/chunks first."
+        )
+
+    jobs[job_id].update({
+        "status": "generating_mom", "step": "♻️  Re-generating MoM only…",
+        "progress": 70, "error": None,
+    })
+    _save_jobs_to_disk()
+
+    loop = asyncio.get_event_loop()
+    background_tasks.add_task(loop.run_in_executor, _executor, _rerun_mom_only, job_id)
+
+    return {
+        "job_id": job_id,
+        "message": "MoM re-generation started. All other steps skipped.",
+        "skipped": ["transcription", "chunking", "indexing"],
+        "running":  ["mom_generation"],
+    }
 
 
 # ── Transcript ────────────────────────────────────────────────────────────────

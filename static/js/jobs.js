@@ -2,8 +2,6 @@
 
 const Jobs = (() => {
 
-  const STATUS_STEPS = ['transcribing', 'chunking', 'indexing', 'generating_mom', 'completed'];
-
   /* ── Initial load ─────────────────────────────────────────────── */
   async function loadAll() {
     try {
@@ -31,8 +29,9 @@ const Jobs = (() => {
       _upsertCard(job);
       _markActive(jobId);
 
-      /* video */
-      Video.load(job.source_video ? Api.videoUrl(jobId) : null);
+      /* video — source_video is a URL string when present */
+      const hasVideo = !!(job.source_video);
+      Video.load(hasVideo ? Api.videoUrl(jobId) : null);
 
       /* transcript */
       if (job.transcript_available && job.transcript) {
@@ -48,8 +47,8 @@ const Jobs = (() => {
         MoM.setPlaceholder(job.status);
       }
 
-      /* Clips */
-      Clips.init(jobId, !!job.source_video);
+      /* Clips — pass correct boolean */
+      Clips.init(jobId, hasVideo);
 
     } catch (err) {
       console.error('loadAndRender error', err);
@@ -123,13 +122,19 @@ const Jobs = (() => {
                   : 'processing';
     const name    = job.filename || 'Meeting';
     const label   = job.status.replace(/_/g, ' ');
+    const icon    = job.file_type === 'video' ? 'fa-film'
+                  : job.file_type === 'audio' ? 'fa-microphone'
+                  : 'fa-file-lines';
     return `
       <div data-job-id="${id}" class="job-card ${id === current ? 'active' : ''}">
-        <div class="job-name" title="${name}">${name}</div>
-        <div class="job-meta">
-          <span class="job-dot ${dotCls}"></span>
-          <span>${label}</span>
-          ${job.duration_seconds ? `<span>· ${UI.formatTime(job.duration_seconds)}</span>` : ''}
+        <div class="job-card-icon"><i class="fas ${icon}"></i></div>
+        <div class="job-card-content">
+          <div class="job-name" title="${name}">${name}</div>
+          <div class="job-meta">
+            <span class="job-dot ${dotCls}"></span>
+            <span>${label}</span>
+            ${job.duration_seconds ? `<span>· ${UI.formatTime(job.duration_seconds)}</span>` : ''}
+          </div>
         </div>
       </div>`;
   }
