@@ -32,14 +32,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from config import settings
-from src.audio_extraction.extractor import extract_audio_from_video
-from src.audio_to_text.converter import convert_audio_to_text
-from src.srt_parser.parser import parse_srt
-from src.chunking.chunker import TranscriptChunker
-from src.vector_store.store import MeetingVectorStore
-from src.report_generation.rag_mom_generator import RAGMoMGenerator
-from src.video_clipping.clipper import VideoClipper
+from backend.core.settings import settings
+from processing.audio.extractor import extract_audio_from_video
+from processing.audio.transcription.converter import convert_audio_to_text
+from processing.text.parser import parse_srt
+from processing.text.chunking.chunker import TranscriptChunker
+from processing.vector.store import MeetingVectorStore
+from processing.reports.rag_mom_generator import RAGMoMGenerator
+from processing.video.clipper import VideoClipper
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ app.add_middleware(
 )
 
 # Mount static files
-static_path = Path(__file__).parent.parent / "static"
+static_path = Path(__file__).parent.parent / "frontend" / "static"
 if static_path.exists():
     app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
@@ -358,7 +358,7 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         mom_path = str(job_dir / "mom.json")
 
         if settings.llm_backend == "template":
-            from src.report_generation.mom_generator import MoMGenerator
+            from processing.reports.mom_generator import MoMGenerator
             gen = MoMGenerator(backend="template")
             mom = gen.generate(chunks, output_path=mom_path)
         else:
@@ -434,7 +434,7 @@ def _rerun_from_chunks(job_id: str) -> None:
         mom_path = str(job_dir / "mom.json")
 
         if settings.llm_backend == "template":
-            from src.report_generation.mom_generator import MoMGenerator
+            from processing.reports.mom_generator import MoMGenerator
             gen = MoMGenerator(backend="template")
             mom = gen.generate(chunks, output_path=mom_path)
         else:
@@ -486,7 +486,7 @@ def _rerun_from_index(job_id: str) -> None:
         mom_path = str(job_dir / "mom.json")
 
         if settings.llm_backend == "template":
-            from src.report_generation.mom_generator import MoMGenerator
+            from processing.reports.mom_generator import MoMGenerator
             gen = MoMGenerator(backend="template")
             mom = gen.generate(chunks, output_path=mom_path)
         else:
@@ -532,7 +532,7 @@ def _rerun_mom_only(job_id: str) -> None:
                 raise RuntimeError("No chunks.json found.")
             with open(chunks_file) as f:
                 chunks = json.load(f)
-            from src.report_generation.mom_generator import MoMGenerator
+            from processing.reports.mom_generator import MoMGenerator
             gen = MoMGenerator(backend="template")
             mom = gen.generate(chunks, output_path=mom_path)
         else:
@@ -564,7 +564,7 @@ async def health():
 @app.get("/", tags=["Health"])
 async def root():
     from fastapi.responses import FileResponse
-    app_path = Path(__file__).parent.parent / "static" / "index.html"
+    app_path = Path(__file__).parent.parent / "frontend" / "static" / "index.html"
     if app_path.exists():
         return FileResponse(app_path, media_type="text/html")
     return {"name": "Meeting Intelligence Platform", "version": "1.0.0", "docs": "/docs"}

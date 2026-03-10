@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.vector_store.store import MeetingVectorStore
+    from processing.vector.store import MeetingVectorStore
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────

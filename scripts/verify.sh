@@ -65,7 +65,7 @@ fi
 
 # Check 5: API Imports
 echo -n "✓ Checking API imports... "
-if python -c "from app.api import app; from src.audio_extraction.extractor import extract_audio_from_video; from src.audio_to_text.converter import convert_audio_to_text; from src.chunking.chunker import TranscriptChunker; from src.vector_store.store import MeetingVectorStore; from src.report_generation.rag_mom_generator import RAGMoMGenerator; from src.video_clipping.clipper import VideoClipper" 2>/dev/null; then
+if python -c "from backend.routes import app; from processing.audio.extractor import extract_audio_from_video; from processing.audio.transcription.converter import convert_audio_to_text; from processing.text.chunker import TranscriptChunker; from processing.vector.store import MeetingVectorStore; from processing.reports.rag_mom_generator import RAGMoMGenerator; from processing.video.clipper import VideoClipper" 2>/dev/null; then
     echo -e "${GREEN}OK${NC}"
 else
     echo -e "${RED}FAILED${NC}"

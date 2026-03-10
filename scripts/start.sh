@@ -2,7 +2,7 @@
 # Meeting Intelligence Platform - One-Click Startup Script
 # Usage: ./start.sh
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 echo "🚀 Meeting Intelligence Platform"
 echo "=================================="
@@ -53,4 +53,4 @@ echo "Press Ctrl+C to stop the server"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-python run_server.py
+python scripts/run_server.py
