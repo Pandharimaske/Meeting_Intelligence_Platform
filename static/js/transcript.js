@@ -16,11 +16,26 @@ const Transcript = (() => {
     el.innerHTML = segs.map(seg => {
       const speaker = seg.speaker || 'Unknown';
       const cls     = State.getSpeakerClass(speaker);
-      const ts      = seg.start != null ? UI.formatTime(seg.start) : '';
+      const start   = seg.start ?? 0;
+      const end     = seg.end   ?? 0;
+      const ts      = start != null ? UI.formatTime(start) : '';
+      const hasClip = (end - start) > 1; // only offer clip if segment > 1s
+
       return `
         <div class="transcript-entry fade-up">
-          ${ts ? `<span class="t-timestamp">${ts}</span>` : ''}
-          <span class="t-speaker-badge ${cls}">${speaker}</span>
+          <div class="t-left">
+            ${ts ? `
+              <span class="t-timestamp"
+                    onclick="Video.seekTo('${ts}')"
+                    title="Seek to ${ts}">${ts}</span>` : ''}
+            ${hasClip ? `
+              <button class="t-clip-btn"
+                      onclick="Clips.playClip(${start}, ${end}, '${_esc(speaker)} @ ${ts}')"
+                      title="Play clip for this segment">
+                <i class="fas fa-scissors"></i>
+              </button>` : ''}
+          </div>
+          <span class="t-speaker-badge ${cls}">${_esc(speaker)}</span>
           <span class="t-text">${_escape(seg.text || '')}</span>
         </div>`;
     }).join('');
@@ -33,6 +48,10 @@ const Transcript = (() => {
 
   function _escape(str) {
     return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function _esc(str) {
+    return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
   }
 
   return { render, setPlaceholder };

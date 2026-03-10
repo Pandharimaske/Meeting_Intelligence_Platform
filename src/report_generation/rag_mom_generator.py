@@ -58,11 +58,30 @@ You are a helpful, friendly meeting assistant. You have access to the full trans
 
 YOUR JOB
 --------
-Help the user understand what happened in their meeting.
+Help the user understand what happened in their meeting with clear, well-formatted responses.
 - Answer questions about content, decisions, action items, speakers, and topics.
 - If the user greets you or makes small talk, respond warmly and briefly, then offer to help.
-- If the user asks for a summary, always provide one using the excerpts given.
+- If the user asks for a summary, provide one using the excerpts—use clear structure with headers and lists.
 - Cite timestamps in [HH:MM:SS] format when referencing specific moments.
+
+FORMATTING GUIDELINES (for better readability)
+-----------------------------------------------
+USE MARKDOWN-STYLE FORMATTING to make answers more scannable and visually clear:
+- Use **bold** for important terms, decisions, names, and key metrics (e.g., **$500K budget**)
+- Use # Headers, ## Subheaders for main sections (e.g., ## Key Decisions)
+- Use bullet points with - or • for lists (e.g., - Item 1\n- Item 2)
+- Use numbered lists for sequential steps or priorities (e.g., 1. First\n2. Second)
+- Use `inline code` for tech terms, product names, or specific values
+- Highlight critical keywords like: **Decision:** **Action:** **Owner:** **Deadline:**
+
+STRUCTURE YOUR RESPONSES
+------------------------
+For complex answers, organize with headers:
+- ### Summary / Overview
+- ### Key Points
+- ### Decisions
+- ### Action Items
+- ### Next Steps
 
 RULES
 -----
@@ -337,7 +356,7 @@ class RAGMoMGenerator:
 
         return mom
 
-    def answer_question(self, question: str, history: Optional[List[Dict]] = None) -> str:
+    def answer_question(self, question: str, history: Optional[List[Dict]] = None) -> Tuple[str, bool]:
         """
         Answer a free-form question about the meeting using RAG.
 
@@ -346,9 +365,12 @@ class RAGMoMGenerator:
             history:  Optional list of {role, content} dicts for multi-turn context.
 
         Returns:
-            Plain-text answer with timestamp citations.
+            Tuple of (answer_text, wants_clip) where wants_clip is True if user asked for a clip.
         """
         q = question.strip()
+
+        # ── Detect if user is asking for a clip ──
+        wants_clip = self._detect_clip_request(q)
 
         # ── Handle greetings / small talk without hitting the vector store ──
         _GREETINGS = {"hi", "hii", "hello", "hey", "howdy", "greetings", "sup", "yo"}
@@ -359,7 +381,8 @@ class RAGMoMGenerator:
                 "\u2022 \"What was decided?\"\n"
                 "\u2022 \"Summarise the meeting\"\n"
                 "\u2022 \"Who is responsible for [task]?\"\n"
-                "\u2022 \"What did [speaker] say about [topic]?\""
+                "\u2022 \"What did [speaker] say about [topic]?\"",
+                False
             )
 
         # ── Detect summary requests — use broad queries + lower threshold ──
@@ -433,7 +456,8 @@ class RAGMoMGenerator:
             f"{q}"
         )
 
-        return self._call_llm_raw(prompt, system=_CHAT_SYSTEM_PROMPT)
+        answer = self._call_llm_raw(prompt, system=_CHAT_SYSTEM_PROMPT)
+        return (answer, wants_clip)
 
     def pretty_print(self, mom: Dict) -> str:
         lines = ["=" * 60, f"  MINUTES OF MEETING: {mom.get('title', 'Untitled')}", "=" * 60]
@@ -501,6 +525,27 @@ class RAGMoMGenerator:
             variants.append("action items tasks responsibilities assigned owner")
 
         return variants[:3]
+
+    def _detect_clip_request(self, question: str) -> bool:
+        """
+        Detect if user is explicitly asking for a video clip.
+        Returns True if keywords suggest clip/video content is wanted.
+        """
+        q = question.lower().strip()
+        
+        # Common clip-request keywords
+        clip_keywords = {
+            "show", "clip", "play", "video", "segment", "watch",
+            "see", "display", "recording", "footage", "playback",
+            "zoom in", "extract", "cut", "visual", "screenshot",
+            "skip to", "jump to", "go to", "part where", "moment when",
+            "let me see", "can you show", "show me", "play the",
+            "what does it look like", "what did they look like",
+            "physical", "screen", "whiteboard", "slides", "presentation"
+        }
+        
+        return any(keyword in q for keyword in clip_keywords)
+
 
     def _retrieve_multi_with_threshold(self, queries: List[str], top_k: int, threshold: float) -> List[Dict]:
         """Like _retrieve_multi but with a custom score threshold."""

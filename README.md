@@ -26,11 +26,13 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
 - ✅ Timestamped citations in all MoM sections
 
 #### **Week 3: Retrieval, Clipping & User Interaction** ✅
-- ✅ Chat-based query interface
+- ✅ Chat-based query interface with intelligent clip detection
 - ✅ Semantic search over meeting content
 - ✅ **Video clipping with audio-aware padding** (NEW!)
+- ✅ **Inline clip cards embedded in chat flow** (NEW!)
 - ✅ Clickable sources that play exact video segments
 - ✅ Web frontend for upload, chat, and playback
+- ✅ **Text-only responses by default; clips only on explicit request** (NEW!)
 
 #### **Week 4: Polish, Stability & Demo Readiness** ✅
 - ✅ Comprehensive error handling
@@ -38,6 +40,9 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
 - ✅ Cross-platform compatibility (macOS/Windows)
 - ✅ Modular architecture with clear separation of concerns
 - ✅ Performance optimizations (async processing, caching)
+- ✅ **Enhanced text presentation with markdown formatting** (NEW!)
+- ✅ **Automatic highlighting of important terms** (NEW!)
+- ✅ **Persistent job database + vector store caching** (NEW!)
 
 ---
 
@@ -57,6 +62,17 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
 - **Problem:** LLMs hallucinate speaker attribution in long contexts
 - **Solution:** Structured prompts with explicit speaker ID requirements
 - **Result:** Action items correctly attributed to speakers
+
+### **Enhancement: ChatGPT-Style Text Formatting** ✅ NEW
+- **Problem:** Plain text responses are hard to scan and distinguish important information
+- **Solution:** LLM uses markdown formatting; frontend renders rich text with highlighting
+- **Features:**
+  - **Bold** for important terms, decisions, metrics (e.g., `**$500K budget**`)
+  - Headers (# ## ###) for organization and hierarchy
+  - Bullet lists and numbered lists for clarity
+  - `Inline code` for technical terms
+  - **Automatic keyword highlighting** (decisions, actions, deadlines, etc.)
+  - Proper spacing and visual hierarchy
 
 ---
 
@@ -164,14 +180,77 @@ open http://localhost:8000
 curl -X POST "http://localhost:8000/api/v1/upload" \
   -F "file=@meeting.mp4"
 
-# Ask questions
+# Ask a text-only question (default)
 curl -X POST "http://localhost:8000/api/v1/jobs/{job_id}/chat" \
   -H "Content-Type: application/json" \
   -d '{"question": "What were the key decisions?"}'
+# Response: {answer: "...", sources: [...], wants_clip: false}
+
+# Ask for a video clip (contains clip-request keywords)
+curl -X POST "http://localhost:8000/api/v1/jobs/{job_id}/chat" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Show me the budget discussion"}'
+# Response: {answer: "...", sources: [...], wants_clip: true}
+# Client highlights source cards with "Play Clip" buttons
 
 # Get video clips
 curl "http://localhost:8000/api/v1/jobs/{job_id}/clips/10/20"
 ```
+
+### **Chat Modes**
+
+#### **Mode 1: Text-Only Response (Default)**
+User asks: `"What were the key decisions?"`
+System returns: AI-generated answer with clickable timestamps [HH:MM:SS]
+Display: Clean chat bubble, no sources panel
+Use case: Quick answers, summaries, factual questions
+
+#### **Mode 2: Clip Request (Explicit Keywords)**
+User asks: `"Show me the budget discussion"` or `"Play the part about timeline"`
+System returns: AI answer + **inline clip cards embedded in chat** with:
+- Timestamp range `[HH:MM:SS – HH:MM:SS]`
+- Speaker badge
+- Segment preview text
+- "Play Clip" button (generates + plays video)
+- "Seek" button (jumps to moment in main video)
+- Relevance score
+
+Clip keywords: `show, clip, play, video, segment, watch, see, display, footage, recording, playback, zoom, visual, etc.`
+Use case: Visual context, speaker emphasis, exact wording verification
+
+**UX Benefit:** Clips appear inline in chat flow (not in separate panel) → keeps conversation context in one view
+
+#### **Enhanced Text Presentation (ChatGPT-Style)**
+
+Example response to `"What are the decisions and action items?"`
+
+```
+## 📋 Key Decisions
+
+- **Decision:** Approved **$500K budget** for Q2 marketing [00:15:30]
+- **Owner:** Sarah Chen (Marketing Lead)
+
+## ✅ Action Items
+
+1. **Owner:** John Smith - Set up customer feedback survey by **Friday 3/15** [00:18:45]
+2. **Owner:** Lisa Wong - Schedule engineering review for timeline impact [00:19:20]
+3. **Owner:** Ahmed Patel - Update stakeholders on budget allocation [00:21:05]
+
+## 📝 Important Notes
+
+- Timeline is **critical path** for Q2 launch
+- Customer feedback will drive feature prioritization
+- Follow-up meeting scheduled for **Monday 9am**
+```
+
+**Formatting Features:**
+- ✅ **Bold highlighting** for important terms and metrics
+- ✅ **Headers** for section organization (## ### ####)
+- ✅ **Bullet lists** for key points
+- ✅ **Numbered lists** for sequential action items
+- ✅ **Automatic keyword highlighting** of: decisions, actions, deadlines, owners, critical terms
+- ✅ **Inline code** for technical terms and product names
+- ✅ **Proper spacing** for visual hierarchy and readability
 
 ---
 
@@ -255,6 +334,58 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Research Papers:** AMMGS, AutoMeet, CLIP-It! for foundational concepts
 - **Open Source:** Whisper, pyannote.audio, FAISS, sentence-transformers
 - **Community:** FastAPI, UV, and the broader Python ecosystem
+
+---
+
+*Built with ❤️ for making meetings more productive and searchable.*
+
+---
+
+## 💾 **Job Caching & Persistence** ✅ NEW
+
+### **Problem Solved**
+Previously, refreshing the browser or restarting the server would lose all processing state, requiring users to re-upload and re-process meetings every time.
+
+### **Solution: Persistent Job Database**
+
+All jobs are now persisted to disk automatically:
+
+```
+data/jobs/
+├── jobs.json                          # Job database (auto-updated)
+├── {job_id}/
+│   ├── {video|audio|transcript}       # Original file
+│   ├── chunks.json                    # Semantic chunks
+│   ├── vector_store/                  # FAISS index (persisted)
+│   │   ├── index.faiss                # Vector index
+│   │   ├── chunks.pkl                 # Chunk metadata
+│   │   └── meta.json                  # Model info
+│   ├── transcripts/                   # JSON + TXT transcripts
+│   └── mom.json                       # Minutes of Meeting
+```
+
+### **How It Works**
+
+1. **Auto-Save After Each Step** - Jobs database (jobs.json) is saved after each pipeline step
+2. **Vector Store Persistence** - FAISS indexes are serialized to disk when building completes
+3. **On-Demand Loading** - When you open a previous job, vector store is loaded from disk automatically
+4. **Zero Manual Action** - No cache management needed; works transparently
+
+### **User Experience Improvement**
+
+**Before:**
+- Upload video → wait 5 minutes processing → refresh → LOST! Start over
+
+**After:**
+- Upload video → wait 5 minutes → refresh → jobs still in sidebar
+- Click previous job → instantly loads (from cache, no re-processing)
+
+### **Performance Impact**
+
+- ✅ **First load of job:** Full processing (~5-10 min for 1 hour video)
+- ✅ **Reload after refresh:** Instant (<1 second to load from cache)
+- ✅ **Switching between jobs:** Instant (vector store lazy-loaded from disk)
+- ✅ **Disk usage:** ~100-300 MB per hour of video including compressed FAISS index
 
 ---
 

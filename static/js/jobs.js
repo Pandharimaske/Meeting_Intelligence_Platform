@@ -48,6 +48,9 @@ const Jobs = (() => {
         MoM.setPlaceholder(job.status);
       }
 
+      /* Clips */
+      Clips.init(jobId, !!job.source_video);
+
     } catch (err) {
       console.error('loadAndRender error', err);
     }

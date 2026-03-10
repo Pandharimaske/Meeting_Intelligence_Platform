@@ -77,6 +77,75 @@ _clipper = VideoClipper(str(settings.clips_dir))
 jobs: Dict[str, dict] = {}
 vector_stores: Dict[str, MeetingVectorStore] = {}
 
+# Jobs database file (persistent JSON)
+_jobs_db_file = settings.jobs_dir / "jobs.json"
+
+# ── Persistence Layer ──────────────────────────────────────────────────────────
+
+def _save_jobs_to_disk():
+    """Persist all jobs to JSON database."""
+    try:
+        _jobs_db_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(_jobs_db_file, 'w') as f:
+            json.dump(jobs, f, indent=2, default=str)
+    except Exception as e:
+        print(f"⚠️  Failed to save jobs database: {e}")
+
+def _load_jobs_from_disk():
+    """Load all jobs from JSON database."""
+    global jobs
+    if _jobs_db_file.exists():
+        try:
+            with open(_jobs_db_file, 'r') as f:
+                jobs = json.load(f)
+            print(f"✅ Loaded {len(jobs)} jobs from cache")
+        except Exception as e:
+            print(f"⚠️  Failed to load jobs database: {e}")
+            jobs = {}
+    else:
+        jobs = {}
+
+def _get_vector_store_path(job_id: str) -> Path:
+    """Get the filesystem path for a job's FAISS vector store."""
+    return settings.jobs_dir / job_id / "vector_store"
+
+def _save_vector_store(job_id: str, store: MeetingVectorStore):
+    """Save vector store to disk using FAISS."""
+    try:
+        store_path = _get_vector_store_path(job_id)
+        store_path.mkdir(parents=True, exist_ok=True)
+        store.save(str(store_path))
+    except Exception as e:
+        print(f"⚠️  Failed to save vector store for {job_id}: {e}")
+
+def _load_vector_store(job_id: str) -> Optional[MeetingVectorStore]:
+    """Load vector store from disk using FAISS."""
+    try:
+        store_path = _get_vector_store_path(job_id)
+        if store_path.exists():
+            store = MeetingVectorStore(model_name=settings.embedding_model)
+            store.load(str(store_path))
+            return store
+    except Exception as e:
+        print(f"⚠️  Failed to load vector store for {job_id}: {e}")
+    return None
+
+def _get_store(job_id: str) -> MeetingVectorStore:
+    """Get or load vector store for a job."""
+    if job_id in vector_stores:
+        return vector_stores[job_id]
+    
+    # Try to load from disk
+    store = _load_vector_store(job_id)
+    if store:
+        vector_stores[job_id] = store
+        return store
+    
+    raise HTTPException(status_code=404, detail=f"Vector store not found for job {job_id}")
+
+# Load existing jobs on startup
+_load_jobs_from_disk()
+
 # MIME type map for video extensions
 _VIDEO_MIME = {
     ".mp4":  "video/mp4",
@@ -114,6 +183,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: List[Dict] = []
+    wants_clip: bool = False  # Indicates if user asked for video clip
 
 
 # ── Helper: build RAG generator from config ───────────────────────────────────
@@ -214,6 +284,7 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
     """Full processing pipeline. Runs synchronously in a thread pool."""
     def update(status: str, step: str, progress: int):
         jobs[job_id].update({"status": status, "step": step, "progress": progress})
+        _save_jobs_to_disk()  # Auto-save after each status update
 
     try:
         job_dir = settings.jobs_dir / job_id
@@ -275,6 +346,7 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         store.build(chunks, meeting_id=job_id)
         store.save(str(job_dir / "vector_store"), meeting_id=job_id)
         vector_stores[job_id] = store
+        _save_vector_store(job_id, store)  # Persist vector store to disk
 
         # ── Step 4: Generate MoM ─────────────────────────────────────────
         update("generating_mom", "Generating Minutes of Meeting…", 80)
@@ -297,6 +369,7 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
             "progress":     100,
             "completed_at": datetime.utcnow().isoformat(),
         })
+        _save_jobs_to_disk()  # Save final state
         print(f"  ✓ Pipeline complete for job {job_id}")
 
     except Exception as e:
@@ -477,21 +550,20 @@ async def chat(job_id: str, req: ChatRequest):
         results  = store.search(req.question, top_k=settings.rag_top_k)
         filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
         if not filtered:
-            return ChatResponse(answer="I couldn't find relevant information.", sources=[])
+            return ChatResponse(answer="I couldn't find relevant information.", sources=[], wants_clip=False)
         answer = "\n\n".join(f"[{r['start_timestamp']}] {r['raw_text'][:200]}" for r in filtered)
-        return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered))
+        return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered), wants_clip=False)
 
     rag = _make_rag(store)
 
-    # answer_question uses the dedicated chat system prompt, query expansion,
-    # and multi-query retrieval — all defined in RAGMoMGenerator.
-    answer = rag.answer_question(req.question, history=req.history or [])
+    # answer_question now returns (answer, wants_clip) tuple
+    answer, wants_clip = rag.answer_question(req.question, history=req.history or [])
 
     # Fetch sources separately for the UI (direct search on the raw question)
     results  = store.search(req.question, top_k=settings.rag_top_k)
     filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
 
-    return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered))
+    return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered), wants_clip=wants_clip)
 
 
 # ── Video Clips ───────────────────────────────────────────────────────────────
@@ -525,17 +597,6 @@ def _require_completed(job_id: str, job: dict):
     if job["status"] != "completed":
         raise HTTPException(status_code=202, detail=f"Still processing: {job['step']}")
 
-def _get_store(job_id: str) -> MeetingVectorStore:
-    if job_id in vector_stores:
-        return vector_stores[job_id]
-    store_dir = settings.jobs_dir / job_id / "vector_store"
-    if not store_dir.exists():
-        raise HTTPException(status_code=404, detail="Vector store not found for this job.")
-    store = MeetingVectorStore(model_name=settings.embedding_model)
-    store.load(str(store_dir), meeting_id=job_id)
-    store._get_model()
-    vector_stores[job_id] = store
-    return store
 
 def _job_summary(job_id: str, job: dict) -> dict:
     return {

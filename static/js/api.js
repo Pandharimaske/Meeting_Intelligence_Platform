@@ -27,8 +27,14 @@ const Api = {
     return res.json();
   },
 
-  jobs:       ()      => Api.get('/api/v1/jobs'),
-  job:        (id)    => Api.get(`/api/v1/jobs/${id}`),
-  chat:       (id, q, history) => Api.post(`/api/v1/jobs/${id}/chat`, { question: q, history }),
-  videoUrl:   (id)    => `${API_URL}/api/v1/jobs/${id}/video`,
+  jobs:     ()      => Api.get('/api/v1/jobs'),
+  job:      (id)    => Api.get(`/api/v1/jobs/${id}`),
+  chat:     (id, q, history) => Api.post(`/api/v1/jobs/${id}/chat`, { question: q, history }),
+  videoUrl: (id)    => `${API_URL}/api/v1/jobs/${id}/video`,
+  clipUrl:  (id, start, end) => `${API_URL}/api/v1/jobs/${id}/clips/${start}/${end}`,
+
+  /* Request a clip — returns { clip_url, start_time, end_time } */
+  async clip(jobId, start, end) {
+    return Api.get(`/api/v1/jobs/${jobId}/clips/${start}/${end}`);
+  },
 };

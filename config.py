@@ -53,7 +53,7 @@ class Settings(BaseSettings):
         description="Max tokens for LLM response"
     )
     llm_temperature: float = Field(
-        default=0.2,
+        default=0.1,
         description="LLM sampling temperature (lower = more deterministic)"
     )
 

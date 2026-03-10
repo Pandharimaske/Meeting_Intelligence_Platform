@@ -131,6 +131,9 @@
               <button class="tab-btn" data-tab="mom" role="tab">
                 <i class="fas fa-file-lines"></i> Minutes
               </button>
+              <button class="tab-btn" data-tab="clips" role="tab">
+                <i class="fas fa-scissors"></i> Clips
+              </button>
               <button class="tab-btn" data-tab="chat" role="tab">
                 <i class="fas fa-comments"></i> AI Chat
               </button>
@@ -152,6 +155,16 @@
                 <div class="placeholder-text">
                   <i class="fas fa-file-lines"></i>
                   Minutes will appear once the pipeline finishes.
+                </div>
+              </div>
+
+              <!-- Clips pane -->
+              <div id="tab-clips" class="tab-pane" role="tabpanel">
+                <div id="clipsList" style="display:flex;flex-direction:column;gap:10px;padding:20px 24px;">
+                  <div class="placeholder-text">
+                    <i class="fas fa-scissors"></i>
+                    <span>Meeting clips will appear here</span>
+                  </div>
                 </div>
               </div>
 
@@ -204,8 +217,18 @@
               </div>
             </div>
 
+            <!-- Clip panel (revealed when a clip is requested) -->
+            <div id="clipPanel" class="hidden" style="display:flex;flex-direction:column;border-top:1px solid var(--border);overflow:hidden;flex:1;">
+              <div class="panel-header"><i class="fas fa-scissors"></i> Clip</div>
+              <div id="clipPanelBody" style="flex:1;overflow:hidden;display:flex;flex-direction:column;padding:12px;">
+                <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">
+                  <i class="fas fa-video" style="font-size:24px;margin-right:8px;opacity:0.5;"></i> Loading clip...
+                </div>
+              </div>
+            </div>
+
             <!-- Sources panel (revealed after a chat reply) -->
-            <div id="sourcesPanel" class="hidden" style="display:flex;flex-direction:column;border-top:1px solid var(--border);overflow:hidden;flex:1;">
+            <div id="sourcesPanel" class="hidden sources-panel" role="region" aria-label="Chat sources">
               <div class="panel-header"><i class="fas fa-quote-left"></i> Sources</div>
               <div class="sources-list" id="sourcesList"></div>
             </div>
@@ -229,6 +252,7 @@
   <script src="/static/js/chat.js"></script>
   <script src="/static/js/upload.js"></script>
   <script src="/static/js/jobs.js"></script>
+  <script src="/static/js/clips.js"></script>
   <script src="/static/js/app.js"></script>
 
 </body>
