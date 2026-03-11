@@ -630,7 +630,13 @@ class RAGMoMGenerator:
 
         try:
             for chunk in stream:
-                token = chunk.choices[0].delta.content
+                # Guard: some backends send usage/stats chunks with empty choices
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta is None:
+                    continue
+                token = delta.content
                 if not token:
                     continue
 
@@ -650,7 +656,7 @@ class RAGMoMGenerator:
                 yield token
 
         except Exception as e:
-            # Stream broke after some tokens — don't duplicate, just stop
+            # Stream broke mid-way — log and stop cleanly
             print(f"  ⚠ Stream interrupted after {tokens_yielded} tokens: {e}")
             return
 

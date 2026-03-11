@@ -79,9 +79,9 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
 ## 📋 **Remaining Improvements** (Future Enhancements)
 
 ### **High Priority**
-1. **Gap 1: Word-Level Forced Alignment**
-   - Replace vanilla Whisper with `whisperX` for phoneme-level timestamp accuracy
-   - Benefits: More precise video clipping, better speaker attribution
+1. ~~**Gap 1: Word-Level Forced Alignment**~~ ✅ **COMPLETED**
+   - Replaced vanilla Whisper with `WhisperX` for word-level timestamp accuracy
+   - Benefits: Precise video clipping, accurate speaker attribution
 
 2. **Real-time Processing**
    - Streaming transcription for live meetings
@@ -113,27 +113,33 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
 ## 🛠 **Technology Stack**
 
 ### **Core AI/ML**
-- **ASR:** OpenAI Whisper (base model)
-- **Speaker Diarization:** pyannote.audio
-- **Embeddings:** sentence-transformers (all-MiniLM-L6-v2)
-- **Vector Search:** FAISS
+- **ASR:** WhisperX (CTranslate2-accelerated Whisper) with word-level alignment
+- **Speaker Diarization:** pyannote.audio (speaker-diarization-3.1)
+- **Embeddings:** sentence-transformers (all-MiniLM-L6-v2, 384-dim)
+- **Vector Search:** FAISS (IndexFlatIP, cosine similarity)
 - **LLM:** Anthropic Claude / OpenAI GPT / OpenRouter (configurable)
+- **Orchestration:** LangChain + LangGraph
 
 ### **Backend**
 - **Framework:** FastAPI (async, high performance)
+- **Server:** Uvicorn (ASGI)
 - **Language:** Python 3.11+
-- **Video Processing:** FFmpeg
-- **Vector DB:** FAISS (in-memory)
-- **Config:** Pydantic settings
+- **Video Processing:** FFmpeg (audio extraction + video clipping)
+- **Vector DB:** FAISS (persisted to disk, lazy-loaded)
+- **Chat Storage:** SQLite (persistent chat history)
+- **Config:** Pydantic Settings (`.env` driven)
+- **Real-time:** WebSocket (pipeline progress) + SSE (streaming chat)
 
 ### **Frontend**
-- **UI:** Vanilla HTML/CSS/JS (no frameworks)
-- **Styling:** Custom CSS with dark theme
-- **API Client:** Fetch API
+- **UI:** React (Single Page Application)
+- **Styling:** Tailwind CSS
+- **Communication:** REST API + SSE streaming + WebSocket
+- **Components:** UploadSection, JobList, JobView, PipelineBar, ChatTab, ClipCard
+- **Build:** Create React App, served by FastAPI static mount
 
 ### **Infrastructure**
 - **Package Management:** UV (fast, reliable)
-- **Environment:** Virtual environments
+- **Environment:** Virtual environments (.venv)
 - **Cross-platform:** pathlib, subprocess (works on Windows/macOS/Linux)
 
 ---
@@ -167,8 +173,11 @@ cp .env.example .env
 
 ### **Run**
 ```bash
-# Start the server
-python run_server.py
+# Option 1: One-click startup (builds frontend + starts server)
+bash scripts/start.sh
+
+# Option 2: Manual start
+uv run uvicorn backend.routes:app --host 0.0.0.0 --port 8000
 
 # Open in browser
 open http://localhost:8000
@@ -258,23 +267,54 @@ Example response to `"What are the decisions and action items?"`
 
 ```
 Meeting_Intelligence_Platform/
-├── app/
-│   ├── api.py              # FastAPI application & routes
-│   └── __init__.py
-├── src/
-│   ├── audio_extraction/   # Video → Audio conversion
-│   ├── audio_to_text/      # Whisper transcription
-│   ├── chunking/          # Semantic chunking
-│   ├── diarization/       # Speaker identification
-│   ├── report_generation/  # MoM generation (RAG)
-│   ├── vector_store/      # FAISS embeddings
-│   └── video_clipping/    # FFmpeg video slicing ⭐ NEW
-├── static/                # Web frontend
-├── data/                  # Processed files (not committed)
-├── config.py              # Configuration management
-├── pyproject.toml         # Dependencies & metadata
-├── run_server.py         # Application entry point
-└── README.md             # This file
+├── backend/
+│   ├── routes.py              # FastAPI app, REST/WebSocket/SSE endpoints
+│   ├── chat_db.py             # SQLite chat history persistence
+│   └── core/
+│       └── settings.py        # Pydantic Settings (.env config)
+├── processing/
+│   ├── audio/
+│   │   ├── extractor.py       # FFmpeg audio extraction
+│   │   └── transcription/
+│   │       └── converter.py   # WhisperX transcription + diarization
+│   ├── text/
+│   │   ├── parser.py          # SRT/VTT parser
+│   │   ├── chunking/
+│   │   │   └── chunker.py     # Semantic chunking with metadata
+│   │   └── diarization/
+│   │       └── speaker_diarization.py  # Standalone speaker ID
+│   ├── vector/
+│   │   └── store.py           # FAISS vector store (build/search/persist)
+│   ├── reports/
+│   │   ├── mom_generator.py       # Template-based MoM
+│   │   └── rag_mom_generator.py   # RAG-based MoM + chat engine
+│   └── video/
+│       └── clipper.py         # FFmpeg video clipping
+├── frontend/
+│   ├── src/
+│   │   ├── App.js             # Main React app (tabs, chat, video)
+│   │   ├── components/
+│   │   │   ├── UploadSection.js   # Drag-and-drop upload
+│   │   │   ├── JobList.js         # Sidebar job listing
+│   │   │   ├── JobView.js         # Transcript/MoM/Chat tabs
+│   │   │   └── ProgressOverlay.js # Pipeline progress bar
+│   │   ├── hooks/
+│   │   │   └── useWebSocket.js    # WebSocket progress hook
+│   │   └── utils/
+│   │       └── api.js             # REST + SSE API client
+│   └── build/                 # Production build (served by FastAPI)
+├── scripts/
+│   ├── run_server.py          # Uvicorn launcher
+│   └── start.sh               # One-click startup script
+├── data/                      # Runtime data (not committed)
+│   ├── jobs/jobs.json         # Job registry
+│   ├── jobs/{id}/             # Per-job: chunks, MoM, vectors, transcripts
+│   ├── video/                 # Uploaded videos
+│   ├── audio/                 # Extracted audio
+│   └── clips/                 # Generated video clips
+├── docs/                      # Documentation
+├── pyproject.toml             # Dependencies & metadata
+└── .env                       # API keys & configuration
 ```
 
 ---
@@ -287,10 +327,12 @@ Meeting_Intelligence_Platform/
 - ✅ Production-ready error handling and logging
 
 ### **Performance Benchmarks**
-- **Transcription:** ~10x realtime on CPU (base model)
-- **MoM Generation:** <30 seconds for 1-hour meeting
-- **Video Clipping:** <5 seconds for any segment
-- **Search Latency:** <100ms for semantic queries
+- **Transcription:** ~10x realtime on CPU (WhisperX base model)
+- **MoM Generation:** <30 seconds for 1-hour meeting (RAG per-section)
+- **Video Clipping:** <5 seconds for any segment (FFmpeg stream-copy)
+- **Search Latency:** <100ms for FAISS semantic queries
+- **Chat Streaming:** Token-by-token SSE delivery
+- **Job Reload:** <1 second (persisted to disk)
 
 ### **User Experience**
 - ✅ Intuitive web interface

@@ -436,12 +436,39 @@ function MomTab({ mom, jobId }) {
 
 // ── CHAT TAB ───────────────────────────────────────────────────────────────
 function ChatTab({ jobId, hasVideo, onSeek }) {
-  const [messages, setMessages]   = useState([]);
-  const [input, setInput]         = useState('');
-  const [busy, setBusy]           = useState(false);
-  const [history, setHistory]     = useState([]);
-  const bottomRef                 = useRef(null);
-  const inputRef                  = useRef(null);
+  const [messages, setMessages]       = useState([]);
+  const [input, setInput]             = useState('');
+  const [busy, setBusy]               = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const bottomRef                     = useRef(null);
+  const inputRef                      = useRef(null);
+
+  // Load persisted history from SQLite on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHistory() {
+      try {
+        const data = await api.chatHistory(jobId);
+        if (!cancelled) setMessages(data.messages || []);
+      } catch (e) {
+        console.warn('Could not load chat history:', e);
+      } finally {
+        if (!cancelled) setHistoryLoading(false);
+      }
+    }
+    loadHistory();
+    return () => { cancelled = true; };
+  }, [jobId]);
+
+  async function clearHistory() {
+    if (!window.confirm('Clear all chat history for this meeting?')) return;
+    try {
+      await api.clearChatHistory(jobId);
+      setMessages([]);
+    } catch (e) {
+      console.error('Failed to clear history:', e);
+    }
+  }
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -461,7 +488,8 @@ function ChatTab({ jobId, hasVideo, onSeek }) {
     let fullAnswer = '';
 
     try {
-      for await (const event of api.chatStream(jobId, q, history.slice(-12))) {
+      // History is managed server-side via DB — no need to send from frontend
+      for await (const event of api.chatStream(jobId, q, [])) {
         if (event.type === 'token') {
           fullAnswer += event.token;
           setMessages(prev => prev.map(m => m.id === msgId ? { ...m, content: fullAnswer } : m));
@@ -485,10 +513,7 @@ function ChatTab({ jobId, hasVideo, onSeek }) {
         ? { ...m, content: `⚠️ Error: ${err.message}`, streaming: false } : m));
     }
 
-    setHistory(prev => [...prev,
-      { role: 'user', content: q },
-      { role: 'assistant', content: fullAnswer },
-    ]);
+    // History is persisted server-side
     setBusy(false);
     setTimeout(() => inputRef.current?.focus(), 50);
   }
@@ -517,8 +542,16 @@ function ChatTab({ jobId, hasVideo, onSeek }) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
 
+        {/* History loading spinner */}
+        {historyLoading && (
+          <div className="flex items-center justify-center h-full gap-2 text-slate-500 text-xs">
+            <span className="w-3 h-3 border-2 border-slate-600 border-t-indigo-400 rounded-full animate-spin" />
+            Loading chat history…
+          </div>
+        )}
+
         {/* Empty state */}
-        {messages.length === 0 && (
+        {!historyLoading && messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full gap-5 pb-8">
             <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-violet-500/20 border border-indigo-500/20 flex items-center justify-center text-2xl">
               🧠
@@ -620,6 +653,14 @@ function ChatTab({ jobId, hasVideo, onSeek }) {
 
       {/* Input bar */}
       <div className="border-t border-slate-700/80 p-3 bg-slate-800/60 shrink-0">
+        {messages.length > 0 && (
+          <div className="flex justify-end mb-1.5">
+            <button onClick={clearHistory}
+              className="text-xs text-slate-600 hover:text-red-400 transition px-2 py-0.5 rounded hover:bg-red-500/10">
+              🗑 Clear history
+            </button>
+          </div>
+        )}
         <div className="flex gap-2">
           <input
             ref={inputRef}
