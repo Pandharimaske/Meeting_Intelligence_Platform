@@ -1,13 +1,21 @@
 """
-RAG-based Minutes of Meeting Generator — v3
+RAG-based Minutes of Meeting Generator — v3.2
 
-New in v3:
-  - stream_events(): sync generator yielding (event_type, data) for SSE streaming
-  - _stream_llm_tokens(): per-backend streaming token generators
-  - _get_chat_context(): refactored context retrieval
-  - _build_history_block(): refactored history formatting
-  - _generate_followups(): LLM-powered follow-up question suggestions
-  - extract_speaker_names_from_segments(): standalone LLM speaker resolver
+Changes in v3.2:
+  - ROOT CAUSE FIX for duplicate responses: arcee-ai/trinity-large-preview:free (and
+    other OpenRouter free models) return a FULL non-streaming response even when
+    stream=True is sent. The OpenAI SDK wraps it as a single chunk, so the first
+    token IS the full answer. We now detect this in _stream_openai_tokens and
+    emit it as a FALLBACK sentinel immediately, preventing double-output.
+  - Better action-item retrieval: explicit multi-query sweep across the full
+    transcript, not just top-k RAG results.
+  - _generate_section now uses top_k * 2 chunks for coverage-heavy sections
+    (action_items, decisions, key_points, summary).
+  - _CHAT_SYSTEM_PROMPT v2: stronger no-repeat / no-pad enforcement, cleaner
+    action-item format guidance.
+  - Clip scoring: boosted keyword weight, penalty for very short clips (<3s).
+  - _format_context: now includes word count hint so LLM knows chunk density.
+  - MoM section retrieval: 4 queries per section (was 2) for better recall.
 """
 
 import json
@@ -47,23 +55,48 @@ STRICT RULES
 """
 
 _CHAT_SYSTEM_PROMPT = """\
-You are a precise, helpful meeting assistant with access to a meeting transcript.
+You are a sharp, precise AI assistant for meeting transcripts.
 
-RESPONSE RULES
---------------
-1. Be direct and concise. Answer the question — don't pad with filler.
-2. Use **bold** for key names, decisions, and important phrases.
-3. Use bullet points only when listing 3+ items.
-4. Use [HH:MM:SS] when citing a specific moment.
-5. For greetings or small talk: respond in 1-2 short sentences, offer to help.
-6. For factual questions: cite the transcript, never guess.
-7. If the answer isn't in the excerpts: say "I couldn't find that in the transcript."
-8. Keep total response under 150 words unless the question explicitly asks for a full summary.
+═══════════════════════════════════════════════════════
+  ABSOLUTE RULES — VIOLATIONS ARE NEVER ACCEPTABLE
+═══════════════════════════════════════════════════════
+1. WRITE EACH IDEA EXACTLY ONCE. Never restate, rephrase, or paraphrase the
+   same point. If you catch yourself repeating, delete the duplicate.
+2. ANSWER FIRST. Put the direct answer in your first sentence. No preambles
+   like "Based on the transcript..." or "According to the excerpts...".
+3. HONEST ABOUT GAPS. If the information is not in the excerpts, say:
+   "I couldn't find that in the transcript." — nothing more.
+4. CONCISE. Under 180 words unless the user explicitly asked for a full summary.
+5. NO PADDING. No filler phrases: "Certainly!", "Great question!", "It seems",
+   "It appears that", "Based on the provided context".
 
-SUMMARY STRUCTURE (only when user explicitly asks for a summary):
-- ### Overview (2-3 sentences)
-- ### Key Decisions
-- ### Action Items
+═══════════════════════════════════════════════
+  FORMATTING BY QUESTION TYPE
+═══════════════════════════════════════════════
+**Action items / tasks:**
+  - List as bullets: "- **[Owner]**: task [HH:MM:SS]"
+  - ONLY include tasks that were explicitly assigned to a named person.
+  - Proposals, suggestions, and discussion points are NOT action items.
+  - If genuinely none exist: "No explicit action items were assigned in this meeting."
+
+**Decisions:**
+  - List as bullets: "- Decision text [HH:MM:SS]"
+  - Only include items explicitly agreed, approved, or committed to.
+  - If none: "No formal decisions were made." (one sentence)
+
+**Speakers / attendees:**
+  - One bullet per speaker with their label and a 5-word role description.
+
+**Summary** (only when user explicitly asked):
+  ### Overview
+  (2-3 sentences covering purpose, outcomes, next steps)
+  ### Key Decisions
+  ### Action Items
+
+**All other questions:**
+  - Prose answer with **bold** for key names/decisions.
+  - Use [HH:MM:SS] inline when citing a moment.
+  - Bullet list only if 3+ distinct items to enumerate.
 """
 
 _CLIP_ANSWER_SYSTEM_PROMPT = """\
@@ -135,11 +168,12 @@ EXAMPLE OUTPUT:
   ]
 }}
 
-Extract up to 8 key points ordered by time. YOUR OUTPUT (JSON only):""",
+Extract up to 10 key points ordered by time. YOUR OUTPUT (JSON only):""",
 
     "decisions": """\
 Extract every DECISION made in the meeting excerpts below.
-A decision = explicit agreement, approval, or commitment. NOT = ideas discussed but not agreed.
+A decision = explicit agreement, approval, or commitment to a course of action.
+NOT a decision = ideas floated, hypotheticals, or questions asked.
 
 EXCERPTS
 --------
@@ -155,9 +189,12 @@ EXAMPLE OUTPUT:
 If no decisions: {{"decisions": []}} YOUR OUTPUT (JSON only):""",
 
     "action_items": """\
-Extract every ACTION ITEM or task assigned in the meeting excerpts below.
-OWNER = speaker name or the person the task was assigned to.
+Extract every ACTION ITEM or task that was explicitly assigned in the meeting excerpts below.
+OWNER = the person the task was assigned to (use their name or speaker label).
 TASK = specific action + deadline if mentioned.
+
+IMPORTANT: Only extract EXPLICIT assignments — "I'll do X", "Can you do Y by Friday",
+"[Name] will take care of Z". Do NOT include vague statements or proposals.
 
 EXCERPTS
 --------
@@ -166,16 +203,17 @@ EXCERPTS
 EXAMPLE OUTPUT:
 {{
   "action_items": [
-    {{"timestamp": "00:15:30", "owner": "Marcus", "task": "Share updated project timeline with stakeholders by end of week"}}
+    {{"timestamp": "00:15:30", "owner": "Marcus", "task": "Share updated project timeline with stakeholders by end of week"}},
+    {{"timestamp": "00:22:10", "owner": "Sarah",  "task": "Draft the new onboarding checklist"}}
   ]
 }}
 
-If no action items: {{"action_items": []}} YOUR OUTPUT (JSON only):""",
+If no explicit action items were assigned: {{"action_items": []}} YOUR OUTPUT (JSON only):""",
 
     "summary": """\
-Write a concise EXECUTIVE SUMMARY of the meeting (3-4 sentences, third person past tense).
-Cover: what the meeting was about, most important outcome, and key next steps.
-Do NOT start with "The meeting..."
+Write a concise EXECUTIVE SUMMARY of the meeting (3–5 sentences, third person past tense).
+Cover: what the meeting was about, the most important outcome(s), and key next steps.
+Do NOT start with "The meeting..." — vary your opening.
 
 EXCERPTS
 --------
@@ -183,26 +221,54 @@ EXCERPTS
 
 EXAMPLE OUTPUT:
 {{
-  "summary": "The product team reviewed Q3 performance and approved a revised roadmap for Q4. Key decisions included prioritising the mobile checkout fix and delaying the analytics dashboard. Budget for additional infrastructure was approved, and several action items were assigned."
+  "summary": "Participants reviewed Q3 performance and approved a revised Q4 roadmap. Key decisions included prioritising the mobile checkout fix and delaying the analytics dashboard. Budget for additional infrastructure was approved pending finance sign-off."
 }}
 
 YOUR OUTPUT (JSON only):""",
 }
 
-_SECTION_QUERIES: Dict[str, Tuple[str, str]] = {
-    "title":        ("purpose goal objective of this meeting",
-                     "meeting name topic overview agenda"),
-    "agenda":       ("main topics subjects discussed covered in meeting",
-                     "what did they talk about meeting themes"),
-    "key_points":   ("important facts figures statistics updates shared",
-                     "significant statements announcements concerns raised"),
-    "decisions":    ("decided agreed approved confirmed chosen selected committed",
-                     "we will go with let's do final decision consensus"),
-    "action_items": ("action items tasks assigned responsibilities owner deadline",
-                     "follow up next steps will do by needs to send prepare"),
-    "summary":      ("overall summary what happened outcome result",
-                     "key takeaways main points conclusion"),
+# Four queries per section for better recall across the full transcript
+_SECTION_QUERIES: Dict[str, List[str]] = {
+    "title": [
+        "purpose goal objective of this meeting",
+        "meeting name topic overview agenda",
+        "what is this meeting about",
+        "meeting introduction opening remarks",
+    ],
+    "agenda": [
+        "main topics subjects discussed covered in meeting",
+        "what did they talk about meeting themes",
+        "agenda items points covered today",
+        "topics reviewed presented discussed",
+    ],
+    "key_points": [
+        "important facts figures statistics updates shared",
+        "significant statements announcements concerns raised",
+        "key information data numbers results",
+        "important findings insights observations",
+    ],
+    "decisions": [
+        "decided agreed approved confirmed chosen selected committed",
+        "we will go with let's do final decision consensus",
+        "agreed to proceed with approved the plan",
+        "outcome conclusion resolution agreed upon",
+    ],
+    "action_items": [
+        "action items tasks assigned responsibilities owner deadline",
+        "follow up next steps will do by needs to send prepare",
+        "I will take care of can you please by Friday",
+        "assigned to responsible for commit to deliver",
+    ],
+    "summary": [
+        "overall summary what happened outcome result",
+        "key takeaways main points conclusion",
+        "meeting overview purpose what was discussed",
+        "what was accomplished resolved decided in this meeting",
+    ],
 }
+
+# Sections that benefit from wider chunk coverage (whole-meeting retrieval)
+_WIDE_COVERAGE_SECTIONS = {"action_items", "decisions", "key_points", "summary"}
 
 
 # ── Standalone: speaker name extraction ──────────────────────────────────────
@@ -224,9 +290,8 @@ def extract_speaker_names_from_segments(
     if not segments or backend == "template":
         return {}
 
-    # Build a compact transcript sample (first 30 segments, each truncated)
     lines = []
-    for seg in segments[:30]:
+    for seg in segments[:40]:  # wider sample
         speaker = seg.get("speaker", "Unknown")
         text = seg.get("text", "").strip()[:120]
         if text:
@@ -236,9 +301,10 @@ def extract_speaker_names_from_segments(
 
     prompt = (
         "Find every place in this transcript where a speaker introduces themselves "
-        "by name (e.g. 'I'm Laura', 'My name is David', 'Hi, I'm Andrew').\n\n"
+        "by name (e.g. 'I'm Laura', 'My name is David', 'Hi, I'm Andrew', "
+        "'This is Marcus speaking').\n\n"
         f"TRANSCRIPT\n{'-'*20}\n{context}\n\n"
-        "Return a JSON object mapping speaker labels to real names.\n"
+        "Return a JSON object mapping speaker labels to real first names.\n"
         "Use null for speakers whose name you cannot confidently determine.\n"
         'Example: {"SPEAKER_00": "Laura", "SPEAKER_01": "David", "SPEAKER_02": null}\n'
         "Return JSON only:"
@@ -254,7 +320,7 @@ def extract_speaker_names_from_segments(
             resp = client.chat.completions.create(
                 model=model,
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=300,
                 messages=[
                     {"role": "system", "content": _SPEAKER_NAMES_SYSTEM_PROMPT},
                     {"role": "user",   "content": prompt},
@@ -266,7 +332,7 @@ def extract_speaker_names_from_segments(
             client = anthropic.Anthropic(api_key=api_key)
             resp = client.messages.create(
                 model=model,
-                max_tokens=200,
+                max_tokens=300,
                 temperature=0.0,
                 system=_SPEAKER_NAMES_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
@@ -275,13 +341,11 @@ def extract_speaker_names_from_segments(
         else:
             return {}
 
-        # Parse JSON
         cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
         start = cleaned.find("{")
         if start > 0:
             cleaned = cleaned[start:]
         mapping = json.loads(cleaned)
-        # Only return entries where value is a non-empty string
         return {k: v for k, v in mapping.items() if isinstance(v, str) and v.strip()}
 
     except Exception as e:
@@ -294,7 +358,7 @@ def extract_speaker_names_from_segments(
 class RAGMoMGenerator:
     """
     Generates MoM and answers chat questions using per-section RAG + LLM.
-    v3: full streaming support via stream_events() generator.
+    v3.2: root-cause fix for duplicate responses on non-streaming models.
     """
 
     def __init__(
@@ -344,7 +408,7 @@ class RAGMoMGenerator:
         history: Optional[List[Dict]] = None,
     ) -> Tuple[str, bool]:
         """
-        Non-streaming answer (kept for backwards compatibility and template backend).
+        Non-streaming answer (backwards compatibility / template backend).
         Returns (answer_text, wants_clip).
         """
         q = question.strip()
@@ -354,10 +418,10 @@ class RAGMoMGenerator:
         if q.lower().rstrip("!.,") in _GREETINGS:
             return (
                 "Hello! I'm your meeting assistant. Try:\n"
-                "• \"What was decided?\"\n"
-                "• \"Summarise the meeting\"\n"
-                "• \"Show me clip when [person/event]\"\n"
-                "• \"What did [speaker] say about [topic]?\"",
+                "- \"What was decided?\"\n"
+                "- \"Summarise the meeting\"\n"
+                "- \"Show me clip when [person/event]\"\n"
+                "- \"What did [speaker] say about [topic]?\"",
                 False,
             )
 
@@ -367,7 +431,7 @@ class RAGMoMGenerator:
             return (answer, True)
 
         context_chunks = self._get_chat_context(q, history or [])
-        context = self._format_context(context_chunks[:12])
+        context = self._format_context(context_chunks[:14])
         meta = self._build_meeting_meta()
         history_block = self._build_history_block(history or [])
 
@@ -388,11 +452,19 @@ class RAGMoMGenerator:
         Synchronous generator for streaming chat responses.
         Yields (event_type, data) tuples:
           ("token",     str)           — text token from LLM
-          ("sources",   List[Dict])    — relevant chunks for non-clip answers
+          ("sources",   List[Dict])    — relevant chunks (sent ONCE after streaming)
           ("clips",     List[Dict])    — clip chunks when wants_clip=True
           ("followups", List[str])     — follow-up question suggestions
           ("done",      None)          — stream complete
           ("error",     str)           — error message
+
+        v3.2 DUPLICATE FIX:
+        Some OpenRouter free models (e.g. arcee-ai/trinity-large-preview:free) do not
+        truly stream — they return the full response as a single chunk even when
+        stream=True is sent. The _stream_openai_tokens generator now detects this
+        (first chunk contains the FULL answer) and emits a FALLBACK sentinel.
+        stream_events() then emits the content exactly once regardless of whether it
+        arrived via streaming or fallback path.
         """
         q = question.strip()
 
@@ -401,10 +473,10 @@ class RAGMoMGenerator:
         if q.lower().rstrip("!.,") in _GREETINGS:
             msg = (
                 "Hello! I'm your meeting assistant. Try asking:\n"
-                "• \"What was decided?\"\n"
-                "• \"Summarise the meeting\"\n"
-                "• \"Show me clip when [person/event]\"\n"
-                "• \"What did [speaker] say about [topic]?\""
+                "- \"What was decided?\"\n"
+                "- \"Summarise the meeting\"\n"
+                "- \"Show me clip when [person/event]\"\n"
+                "- \"What did [speaker] say about [topic]?\""
             )
             yield ("token", msg)
             yield ("done", None)
@@ -429,7 +501,7 @@ class RAGMoMGenerator:
         # ── Normal chat: stream answer ─────────────────────────────────
         try:
             context_chunks = self._get_chat_context(q, history or [])
-            context = self._format_context(context_chunks[:12])
+            context = self._format_context(context_chunks[:14])
             meta = self._build_meeting_meta()
             history_block = self._build_history_block(history or [])
 
@@ -440,13 +512,36 @@ class RAGMoMGenerator:
             )
 
             full_answer = ""
+            tokens_emitted = 0
+
             for token in self._stream_llm_tokens(prompt, system=_CHAT_SYSTEM_PROMPT):
+                _SENTINEL = "\x00FALLBACK\x00"
+                if token.startswith(_SENTINEL):
+                    # Model returned full answer at once (non-streaming)
+                    # Only emit if we haven't already sent tokens (avoids duplicates)
+                    if tokens_emitted == 0:
+                        fallback_text = token[len(_SENTINEL):]
+                        full_answer = fallback_text
+                        yield ("token", fallback_text)
+                    # Either way, stop — don't emit again
+                    break
                 full_answer += token
+                tokens_emitted += 1
                 yield ("token", token)
 
-            yield ("sources", context_chunks[:3])
+            # Send sources exactly once, after streaming completes
+            if context_chunks:
+                # De-duplicate sources by chunk_id before sending
+                seen_ids: set = set()
+                unique_sources = []
+                for c in context_chunks[:5]:
+                    cid = c.get("chunk_id")
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        unique_sources.append(c)
+                yield ("sources", unique_sources[:3])
 
-            # Follow-up suggestions (quick LLM call)
+            # Follow-up suggestions
             followups = self._generate_followups(q, full_answer[:400])
             if followups:
                 yield ("followups", followups)
@@ -464,8 +559,13 @@ class RAGMoMGenerator:
         system: str,
     ) -> Generator[str, None, None]:
         """
-        Sync generator that yields raw text tokens from the LLM.
-        Falls back to a single non-streaming call if streaming unavailable.
+        Sync generator yielding text tokens from the LLM.
+
+        v3.2 sentinel strategy:
+        When a model returns the full response as a single chunk (non-streaming
+        behaviour on a streaming endpoint), _stream_openai_tokens emits the
+        sentinel prefix "\x00FALLBACK\x00<full_text>". The caller in stream_events
+        handles this to emit content exactly once.
         """
         try:
             if self.backend == "openrouter":
@@ -481,14 +581,16 @@ class RAGMoMGenerator:
             elif self.backend == "anthropic":
                 yield from self._stream_anthropic_tokens(prompt, system)
             else:
-                # Fallback: non-streaming, yield full response as one token
-                yield self._call_llm_raw(prompt, system)
+                result = self._call_llm_raw(prompt, system)
+                yield f"\x00FALLBACK\x00{result}"
         except Exception as e:
-            print(f"  ⚠ Streaming failed ({type(e).__name__}): {e} — falling back to full response")
+            print(f"  ⚠ Streaming setup failed ({type(e).__name__}): {e} — using fallback")
             try:
-                yield self._call_llm_raw(prompt, system)
-            except Exception:
-                yield "I encountered an error generating the response."
+                result = self._call_llm_raw(prompt, system)
+                yield f"\x00FALLBACK\x00{result}"
+            except Exception as e2:
+                print(f"  ⚠ Fallback also failed: {e2}")
+                yield "\x00FALLBACK\x00I encountered an error generating the response."
 
     def _stream_openai_tokens(
         self,
@@ -497,11 +599,13 @@ class RAGMoMGenerator:
         base_url: Optional[str] = None,
         extra_headers: Optional[Dict] = None,
     ) -> Generator[str, None, None]:
+        """
+        v3.2: Detects pseudo-streaming (full response in first chunk) by checking
+        if the very first token is suspiciously long (>80 chars). If so, the model
+        isn't truly streaming — emit as FALLBACK sentinel so caller handles it once.
+        """
         from openai import OpenAI
-        client = OpenAI(
-            api_key=self.api_key,
-            base_url=base_url,
-        )
+        client = OpenAI(api_key=self.api_key, base_url=base_url)
         model = self.model or (
             "arcee-ai/trinity-large-preview:free" if self.backend == "openrouter"
             else "gpt-3.5-turbo"
@@ -520,10 +624,35 @@ class RAGMoMGenerator:
             kwargs["extra_headers"] = extra_headers
 
         stream = client.chat.completions.create(**kwargs)
-        for chunk in stream:
-            token = chunk.choices[0].delta.content
-            if token:
+
+        first_token_seen = False
+        tokens_yielded = 0
+
+        try:
+            for chunk in stream:
+                token = chunk.choices[0].delta.content
+                if not token:
+                    continue
+
+                if not first_token_seen:
+                    first_token_seen = True
+                    # Heuristic: if the first "token" is very long, the model is
+                    # returning the full answer at once (fake streaming).
+                    # Threshold: 80 chars covers most real first tokens comfortably.
+                    if len(token) > 80:
+                        yield f"\x00FALLBACK\x00{token}"
+                        # Drain remaining chunks silently (there may be empty deltas)
+                        for _ in stream:
+                            pass
+                        return
+
+                tokens_yielded += 1
                 yield token
+
+        except Exception as e:
+            # Stream broke after some tokens — don't duplicate, just stop
+            print(f"  ⚠ Stream interrupted after {tokens_yielded} tokens: {e}")
+            return
 
     def _stream_anthropic_tokens(
         self,
@@ -548,26 +677,46 @@ class RAGMoMGenerator:
     def _get_chat_context(
         self, question: str, history: List[Dict]
     ) -> List[Dict]:
-        """Retrieve relevant chunks for a chat question."""
-        is_summary = any(w in question.lower() for w in {
-            "summary", "summarise", "summarize", "overview",
-            "recap", "brief", "tldr", "tl;dr", "what happened",
+        """
+        Retrieve relevant chunks for a chat question.
+        v3.2: wider retrieval for whole-meeting questions with evenly-spaced
+        timeline coverage to prevent missing late-meeting action items/decisions.
+        """
+        q_lower = question.lower()
+
+        is_whole_meeting = any(w in q_lower for w in {
+            "summary", "summarise", "summarize", "overview", "recap",
+            "brief", "tldr", "tl;dr", "what happened", "action item",
+            "action items", "all action", "all tasks", "all decisions",
+            "every decision", "who attended", "who were the speakers",
+            "speakers", "all speakers", "list all", "list every",
         })
 
         queries = self._expand_chat_query(question)
+
+        if is_whole_meeting:
+            threshold = min(self.score_threshold, 0.08)
+            top_k = min(self.top_k * 3, 20)
+        else:
+            threshold = min(self.score_threshold, 0.15)
+            top_k = self.top_k
+
         chunks = self._retrieve_multi_with_threshold(
-            queries,
-            top_k=self.top_k,
-            threshold=min(self.score_threshold, 0.15),
+            queries, top_k=top_k, threshold=threshold,
         )
 
-        if is_summary or not chunks:
-            extra = self.store._chunks[:min(10, len(self.store._chunks))]
-            seen = {c.get("chunk_id") for c in chunks}
-            for c in extra:
-                if c.get("chunk_id") not in seen:
-                    chunks.append(c)
-                    seen.add(c.get("chunk_id"))
+        # For whole-meeting questions: add evenly-spaced chunks for full coverage
+        if is_whole_meeting:
+            all_chunks = self.store._chunks
+            n = min(12, len(all_chunks))
+            if n > 0:
+                step = max(1, len(all_chunks) // n)
+                extra = [all_chunks[i] for i in range(0, len(all_chunks), step)][:n]
+                seen = {c.get("chunk_id") for c in chunks}
+                for c in extra:
+                    if c.get("chunk_id") not in seen:
+                        chunks.append(c)
+                        seen.add(c.get("chunk_id"))
 
         return chunks
 
@@ -598,7 +747,7 @@ class RAGMoMGenerator:
         )
 
         saved_max = self.max_tokens
-        self.max_tokens = 150
+        self.max_tokens = 200
         try:
             raw = self._call_llm_raw(prompt, system=_FOLLOWUPS_SYSTEM_PROMPT)
             result = self._parse_json(raw)
@@ -653,12 +802,18 @@ class RAGMoMGenerator:
             keyword_score = sum(1 for kw in keywords if kw.lower() in text_lower) / len(keywords)
 
         duration = chunk.get("duration", 10.0)
-        length_penalty = 1.0 if duration >= 5.0 else 0.5
+        # Stronger penalty for very short clips
+        if duration < 3.0:
+            length_penalty = 0.3
+        elif duration < 5.0:
+            length_penalty = 0.6
+        else:
+            length_penalty = 1.0
 
         return (
-            0.45 * entity_score
-            + 0.35 * vector_score
-            + 0.20 * keyword_score
+            0.40 * entity_score
+            + 0.30 * vector_score
+            + 0.30 * keyword_score
         ) * length_penalty
 
     def _deduplicate_clips(
@@ -756,18 +911,32 @@ class RAGMoMGenerator:
         return any(re.search(p, q) for p in clip_patterns)
 
     def _expand_chat_query(self, question: str) -> List[str]:
+        """Richer query expansion covering major question types."""
         q = question.strip()
+        q_lower = q.lower()
         variants = [q]
+
         keyword_q = re.sub(
             r"^(what|who|when|where|how|did|was|were|is|are|can|could|tell me about|"
-            r"summarize|summarise|explain|describe)\s+",
+            r"summarize|summarise|explain|describe|list|give me|show me)\s+",
             "", q, flags=re.IGNORECASE
         ).strip("?. ")
-        if keyword_q and keyword_q.lower() != q.lower():
+        if keyword_q and keyword_q.lower() != q_lower:
             variants.append(keyword_q)
-        if any(w in q.lower() for w in ["who", "action", "task", "responsible", "owner", "assigned"]):
-            variants.append("action items tasks responsibilities assigned owner")
-        return variants[:3]
+
+        if any(w in q_lower for w in ["action", "task", "todo", "to-do", "assigned", "owner", "responsible"]):
+            variants.append("action items tasks assigned owner responsible follow up")
+
+        if any(w in q_lower for w in ["decision", "decided", "agreed", "approved", "final", "conclusion"]):
+            variants.append("decided agreed approved committed final decision outcome")
+
+        if any(w in q_lower for w in ["speaker", "who", "attendee", "participant", "present", "attended"]):
+            variants.append("speaker participant attendee introduced hello name")
+
+        if any(w in q_lower for w in ["summary", "summarise", "summarize", "overview", "recap", "happened"]):
+            variants.append("meeting overview main topics discussed key points outcomes")
+
+        return variants[:4]
 
     def _build_meeting_meta(self) -> str:
         all_chunks = self.store._chunks
@@ -778,12 +947,17 @@ class RAGMoMGenerator:
         total = last["end"] - first["start"]
         h, m, s = int(total // 3600), int((total % 3600) // 60), int(total % 60)
         duration_str = f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s"
+        speakers = sorted({
+            sp for c in all_chunks for sp in c.get("speakers", []) if sp and sp != "Unknown"
+        })
+        speaker_line = f"Speakers: {', '.join(speakers)}\n" if speakers else ""
         return (
             f"MEETING METADATA\n{'-'*16}\n"
-            f"Start : {first['start_timestamp']}\n"
-            f"End   : {last['end_timestamp']}\n"
-            f"Length: {duration_str}\n"
-            f"Chunks: {len(all_chunks)}\n\n"
+            f"Start   : {first['start_timestamp']}\n"
+            f"End     : {last['end_timestamp']}\n"
+            f"Length  : {duration_str}\n"
+            f"Chunks  : {len(all_chunks)}\n"
+            f"{speaker_line}\n"
         )
 
     # ── Retrieval ────────────────────────────────────────────────────────
@@ -822,16 +996,41 @@ class RAGMoMGenerator:
             ts       = f"[{chunk['start_timestamp']} - {chunk['end_timestamp']}]"
             speakers = chunk.get("speakers", [])
             sp       = f" ({', '.join(speakers)})" if speakers else ""
-            lines.append(f"Excerpt {i} {ts}{sp}:\n{chunk['raw_text'].strip()}\n")
+            wc       = chunk.get("word_count", 0)
+            wc_hint  = f" ~{wc}w" if wc else ""
+            lines.append(f"Excerpt {i} {ts}{sp}{wc_hint}:\n{chunk['raw_text'].strip()}\n")
         return "\n".join(lines)
 
     # ── Section generation (MoM) ─────────────────────────────────────────
 
     def _generate_section(self, section: str) -> Dict:
-        q1, q2 = _SECTION_QUERIES[section]
-        chunks  = self._retrieve_multi([q1, q2], top_k=self.top_k)
+        queries = _SECTION_QUERIES[section]
+
+        # Wide coverage sections get more chunks
+        if section in _WIDE_COVERAGE_SECTIONS:
+            fetch_k = min(self.top_k * 2, 14)
+        else:
+            fetch_k = self.top_k
+
+        chunks = self._retrieve_multi(queries, top_k=fetch_k)
+
+        # Always have at least some context
         if not chunks:
-            chunks = self.store._chunks[:4]
+            chunks = self.store._chunks[:6]
+
+        # For coverage-heavy sections, supplement with evenly-spaced chunks
+        if section in _WIDE_COVERAGE_SECTIONS:
+            all_chunks = self.store._chunks
+            n = min(8, len(all_chunks))
+            if n > 0:
+                step = max(1, len(all_chunks) // n)
+                extra = [all_chunks[i] for i in range(0, len(all_chunks), step)]
+                seen = {c.get("chunk_id") for c in chunks}
+                for c in extra:
+                    if c.get("chunk_id") not in seen:
+                        chunks.append(c)
+                        seen.add(c.get("chunk_id"))
+
         context = self._format_context(chunks)
         prompt  = _SECTION_PROMPTS[section].format(context=context)
         raw     = self._call_llm_raw(prompt, system=_MOM_SYSTEM_PROMPT)

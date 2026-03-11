@@ -5,18 +5,57 @@ import { useWebSocket } from './hooks/useWebSocket';
 // ── markdown renderer ──────────────────────────────────────────────────────
 function renderMarkdown(text) {
   if (!text) return '';
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+
+  // Step 1: escape HTML entities
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Step 2: headings (must run before inline processing)
+  html = html
     .replace(/^### (.+)$/gm, '<h4 class="text-sm font-bold text-slate-100 mt-3 mb-1">$1</h4>')
-    .replace(/^## (.+)$/gm,  '<h3 class="text-base font-bold text-white mt-3 mb-1">$1</h3>')
-    .replace(/^# (.+)$/gm,   '<h2 class="text-lg font-bold text-white mt-4 mb-1">$1</h2>')
-    .replace(/^[-•] (.+)$/gm,'<li class="ml-4 list-disc text-slate-300 my-0.5">$1</li>')
-    .replace(/^\d+\. (.+)$/gm,'<li class="ml-4 list-decimal text-slate-300 my-0.5">$1</li>')
-    .replace(/`(.+?)`/g, '<code class="bg-slate-700 px-1 rounded text-xs font-mono text-emerald-300">$1</code>')
+    .replace(/^## (.+)$/gm,  '<h3 class="text-base font-bold text-white mt-4 mb-1">$1</h3>')
+    .replace(/^# (.+)$/gm,   '<h2 class="text-lg font-bold text-white mt-4 mb-2">$1</h2>');
+
+  // Step 3: collect consecutive bullet lines into <ul> blocks
+  html = html.replace(
+    /((?:^[-•*] .+$\n?)+)/gm,
+    match => {
+      const items = match.trim().split('\n').map(line =>
+        `<li class="ml-1 text-slate-300 leading-relaxed py-0.5">${line.replace(/^[-•*] /, '')}</li>`
+      ).join('');
+      return `<ul class="list-disc pl-5 my-1.5 space-y-0.5">${items}</ul>`;
+    }
+  );
+
+  // Step 4: collect consecutive numbered lines into <ol> blocks
+  html = html.replace(
+    /((?:^\d+\. .+$\n?)+)/gm,
+    match => {
+      const items = match.trim().split('\n').map(line =>
+        `<li class="ml-1 text-slate-300 leading-relaxed py-0.5">${line.replace(/^\d+\. /, '')}</li>`
+      ).join('');
+      return `<ol class="list-decimal pl-5 my-1.5 space-y-0.5">${items}</ol>`;
+    }
+  );
+
+  // Step 5: inline formatting
+  html = html
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+    .replace(/`(.+?)`/g, '<code class="bg-slate-700 px-1.5 py-0.5 rounded text-xs font-mono text-emerald-300">$1</code>')
     .replace(/\[(\d{1,2}:\d{2}(?::\d{2})?)\]/g,
-      '<span class="ts-link cursor-pointer text-indigo-400 underline font-mono text-xs hover:text-indigo-300 transition" data-ts="$1">[$1]</span>')
-    .replace(/\n/g, '<br/>');
+      '<span class="ts-link cursor-pointer text-indigo-400 underline font-mono text-xs hover:text-indigo-300 transition-colors" data-ts="$1">[$1]</span>');
+
+  // Step 6: newlines → <br/> only outside of block-level tags
+  // Split on existing block tags, convert \n only in text segments
+  html = html.split(/(<(?:ul|ol|h[1-4]|li)[^>]*>.*?<\/(?:ul|ol|h[1-4]|li)>)/gs).map((segment, i) => {
+    // odd indices are matched block tags — leave them alone
+    if (i % 2 === 1) return segment;
+    return segment.replace(/\n/g, '<br/>');
+  }).join('');
+
+  return html;
 }
 
 // ── speaker colours ────────────────────────────────────────────────────────
@@ -555,13 +594,13 @@ function ChatTab({ jobId, hasVideo, onSeek }) {
 
               {/* Follow-up suggestion chips */}
               {msg.followups?.length > 0 && !msg.streaming && (
-                <div className="flex flex-col gap-1 w-full mt-1">
-                  <span className="text-xs text-slate-600 px-0.5">Follow up:</span>
-                  <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-col gap-1.5 w-full mt-1">
+                  <span className="text-xs text-slate-500 px-0.5 font-medium">💡 Follow up:</span>
+                  <div className="flex flex-col gap-1.5">
                     {msg.followups.map((q, fi) => (
                       <button key={fi} onClick={() => send(q)}
-                        className="text-xs px-3 py-1.5 rounded-xl bg-slate-800 border border-slate-700 hover:border-indigo-500/50 hover:bg-slate-700/60 hover:text-indigo-300 text-slate-400 transition text-left">
-                        {q}
+                        className="text-xs px-3 py-2 rounded-xl bg-slate-800/80 border border-slate-700 hover:border-indigo-500/50 hover:bg-slate-700/60 hover:text-indigo-300 text-slate-400 transition text-left leading-relaxed">
+                        → {q}
                       </button>
                     ))}
                   </div>
