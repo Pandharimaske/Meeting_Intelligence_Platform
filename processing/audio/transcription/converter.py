@@ -31,6 +31,14 @@ from typing import Optional
 
 import torch
 
+# Try to import whisperx
+try:
+    import whisperx
+    _WHISPERX_AVAILABLE = True
+except ImportError:
+    _WHISPERX_AVAILABLE = False
+    whisperx = None
+
 
 # ── Global model cache for 10x faster processing ───────────────────────
 

@@ -2,20 +2,16 @@ import { useRef, useEffect, useCallback } from 'react';
 
 export function useWebSocket(onMessage) {
   const wsRef = useRef(null);
-  const reconnectTimeoutRef = useRef(null);
-  const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 5;
+  const jobIdRef = useRef(null);
 
   const connect = useCallback((jobId) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return; // Already connected
+    // Disconnect any existing connection first
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
 
-    // Clear any existing reconnect timeout
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
+    jobIdRef.current = jobId;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws/${jobId}`;
@@ -25,53 +21,46 @@ export function useWebSocket(onMessage) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('WebSocket connected for job:', jobId);
-        reconnectAttemptsRef.current = 0;
+        console.log('[WS] Connected for job:', jobId);
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          onMessage(data);
+          if (data.type !== 'ping') {
+            onMessage(data);
+          }
         } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
+          console.error('[WS] Failed to parse message:', e);
         }
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
+        console.log('[WS] Disconnected');
         wsRef.current = null;
       };
 
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.warn('[WS] Error (falling back to polling):', error);
         wsRef.current = null;
       };
 
     } catch (e) {
-      console.error('Failed to create WebSocket:', e);
+      console.warn('[WS] Could not connect:', e);
     }
   }, [onMessage]);
 
   const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
-
-    reconnectAttemptsRef.current = 0;
+    jobIdRef.current = null;
   }, []);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => {
-      disconnect();
-    };
+    return () => disconnect();
   }, [disconnect]);
 
   return { connect, disconnect };

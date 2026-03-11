@@ -1,6 +1,6 @@
 #!/bin/bash
 # Meeting Intelligence Platform - One-Click Startup Script
-# Usage: ./start.sh
+# Usage: ./scripts/start.sh  (run from project root)
 
 cd "$(dirname "$0")/.."
 
@@ -8,49 +8,63 @@ echo "🚀 Meeting Intelligence Platform"
 echo "=================================="
 echo ""
 
-# Check if virtual env exists
+# ── Python venv ───────────────────────────────────────────────────
 if [ ! -d ".venv" ]; then
-    echo "❌ Virtual environment not found"
     echo "Creating virtual environment..."
     python3 -m venv .venv
 fi
-
-# Activate virtual environment
 source .venv/bin/activate
 
-# Check if dependencies are installed
 if ! python -c "import fastapi" 2>/dev/null; then
-    echo "📦 Installing dependencies..."
+    echo "📦 Installing Python dependencies..."
     pip install -e . > /dev/null 2>&1
 fi
 
-# Check if FFmpeg is installed
+# ── FFmpeg check ──────────────────────────────────────────────────
 if ! command -v ffmpeg &> /dev/null; then
-    echo "⚠️  FFmpeg not found. Install with:"
-    echo "   macOS: brew install ffmpeg"
+    echo "⚠️  FFmpeg not found."
+    echo "   macOS:  brew install ffmpeg"
     echo "   Ubuntu: sudo apt install ffmpeg"
     echo ""
 fi
 
-# Clear any lingering processes on port 8000
-echo "🔌 Checking port 8000..."
+# ── React build (only if src/ is newer than build/) ───────────────
+NEEDS_BUILD=false
+if [ ! -d "frontend/build" ] || [ ! -f "frontend/build/index.html" ]; then
+    NEEDS_BUILD=true
+elif [ -n "$(find frontend/src -newer frontend/build/index.html -name '*.js' -o -newer frontend/build/index.html -name '*.css' 2>/dev/null | head -1)" ]; then
+    echo "🔄 Source files changed since last build — rebuilding..."
+    NEEDS_BUILD=true
+fi
+
+if [ "$NEEDS_BUILD" = true ]; then
+    echo "🔨 Building React frontend..."
+    cd frontend
+    if ! command -v npm &> /dev/null; then
+        echo "❌ npm not found. Install Node.js from https://nodejs.org"
+        exit 1
+    fi
+    npm install --silent
+    npm run build
+    cd ..
+    echo "✅ React build complete"
+fi
+
+# ── Port check ────────────────────────────────────────────────────
 if lsof -i :8000 > /dev/null 2>&1; then
-    echo "⚠️  Port 8000 in use, attempting to free it..."
+    echo "⚠️  Port 8000 in use, freeing it..."
     lsof -ti:8000 | xargs kill -9 2>/dev/null || true
     sleep 1
 fi
 
-# Start the server
+# ── Start server ──────────────────────────────────────────────────
 echo ""
-echo "✅ Starting server..."
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "🌐  http://localhost:8000"
+echo "📚  http://localhost:8000/docs"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "🌐 Frontend:  http://localhost:8000"
-echo "📚 API Docs:  http://localhost:8000/docs"
-echo "🔌 API Base:  http://localhost:8000/api/v1"
-echo ""
-echo "Press Ctrl+C to stop the server"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Press Ctrl+C to stop"
 echo ""
 
 python scripts/run_server.py

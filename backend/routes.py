@@ -89,27 +89,16 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
-# Mount static files (React build)
-static_path = Path(__file__).parent.parent / "frontend" / "build" / "static"
-if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
-
-# Mount React app root
-react_path = Path(__file__).parent.parent / "frontend" / "build"
-if react_path.exists():
-    app.mount("/", StaticFiles(directory=str(react_path), html=True), name="react")
-
-# Mount clips directory
-clips_path = settings.clips_dir
-clips_path.mkdir(parents=True, exist_ok=True)
-app.mount("/clips", StaticFiles(directory=str(clips_path)), name="clips")
-
 # Ensure all data dirs exist
 for d in [settings.video_dir, settings.audio_dir, settings.transcript_dir, settings.jobs_dir, settings.clips_dir]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 # Thread pool for CPU-bound work (Whisper, embeddings)
 _executor = ThreadPoolExecutor(max_workers=2)
+
+# Main event loop reference — set on first request so background threads
+# can schedule coroutines on it via run_coroutine_threadsafe()
+_main_loop = None
 
 # Video clipper
 _clipper = VideoClipper(str(settings.clips_dir))
@@ -355,14 +344,21 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         _save_jobs_to_disk()  # Auto-save after each status update
 
         # Send real-time progress update via WebSocket
-        asyncio.run(manager.send_progress(job_id, {
-            "type": "progress",
-            "job_id": job_id,
-            "status": status,
-            "step": step,
-            "progress": progress,
-            "timestamp": datetime.utcnow().isoformat()
-        }))
+        # Must schedule on the main event loop — cannot use asyncio.run() from a thread
+        # that lives outside the main loop.
+        if _main_loop and _main_loop.is_running():
+            import asyncio as _asyncio
+            _asyncio.run_coroutine_threadsafe(
+                manager.send_progress(job_id, {
+                    "type": "progress",
+                    "job_id": job_id,
+                    "status": status,
+                    "step": step,
+                    "progress": progress,
+                    "timestamp": datetime.utcnow().isoformat()
+                }),
+                _main_loop
+            )
 
     try:
         job_dir = settings.jobs_dir / job_id
@@ -418,6 +414,42 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
 
         print(f"  ✓ {len(chunks)} chunks created")
 
+        # ── Step 2.5: Resolve real speaker names via LLM ─────────────────
+        if settings.llm_backend != "template" and segments:
+            try:
+                update("chunking", "Resolving speaker names with AI…", 50)
+                from processing.reports.rag_mom_generator import extract_speaker_names_from_segments
+                api_key_map = {
+                    "openrouter": settings.openrouter_api_key,
+                    "anthropic":  settings.anthropic_api_key,
+                    "openai":     settings.openai_api_key,
+                }
+                speaker_names = extract_speaker_names_from_segments(
+                    segments,
+                    backend=settings.llm_backend,
+                    api_key=api_key_map.get(settings.llm_backend, ""),
+                    model=settings.get_llm_model(),
+                    base_url=settings.openrouter_base_url if settings.llm_backend == "openrouter" else None,
+                )
+                if speaker_names:
+                    jobs[job_id]["speaker_names"] = speaker_names
+                    # Remap speaker labels in segments
+                    for seg in segments:
+                        orig = seg.get("speaker", "")
+                        if orig in speaker_names:
+                            seg["speaker"] = speaker_names[orig]
+                    # Propagate into transcript stored in job
+                    if jobs[job_id].get("transcript"):
+                        jobs[job_id]["transcript"]["segments"] = segments
+                    # Re-chunk with resolved names so embeddings include real names
+                    chunks = chunker.chunk_from_segments(segments)
+                    jobs[job_id]["chunk_count"] = len(chunks)
+                    with open(job_dir / "chunks.json", "w") as f:
+                        json.dump(chunks, f, indent=2, default=str)
+                    print(f"  ✓ Speaker names resolved: {speaker_names}")
+            except Exception as e:
+                print(f"  ⚠ Speaker name resolution failed (non-fatal): {e}")
+
         # ── Step 3: Embed + store ────────────────────────────────────────
         update("indexing", "Embedding chunks and building FAISS index…", 62)
         store = MeetingVectorStore(model_name=settings.embedding_model)
@@ -462,13 +494,18 @@ def _run_pipeline(job_id: str, file_path: Path, file_type: str) -> None:
         _save_jobs_to_disk()
 
         # Send error update via WebSocket
-        asyncio.run(manager.send_progress(job_id, {
-            "type": "error",
-            "job_id": job_id,
-            "status": "failed",
-            "error": error_msg,
-            "timestamp": datetime.utcnow().isoformat()
-        }))
+        if _main_loop and _main_loop.is_running():
+            import asyncio as _asyncio
+            _asyncio.run_coroutine_threadsafe(
+                manager.send_progress(job_id, {
+                    "type": "error",
+                    "job_id": job_id,
+                    "status": "failed",
+                    "error": error_msg,
+                    "timestamp": datetime.utcnow().isoformat()
+                }),
+                _main_loop
+            )
 
         print(f"  ❌ Pipeline failed for job {job_id}: {error_msg}")
         raise
@@ -642,6 +679,14 @@ def _rerun_mom_only(job_id: str) -> None:
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def _capture_event_loop():
+    """Capture the main asyncio event loop so background threads can use it."""
+    global _main_loop
+    import asyncio
+    _main_loop = asyncio.get_event_loop()
+
 
 @app.get("/health", tags=["Health"])
 async def health():
@@ -936,6 +981,81 @@ async def get_mom(job_id: str):
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
 
+@app.post("/api/v1/jobs/{job_id}/chat/stream", tags=["Chat"])
+async def chat_stream(job_id: str, req: ChatRequest):
+    """
+    Server-Sent Events streaming chat endpoint.
+    Yields events: token | sources | clips | followups | done | error
+    """
+    job = _get_job_or_404(job_id)
+    _require_completed(job_id, job)
+    store = _get_store(job_id)
+
+    if settings.llm_backend == "template":
+        # Fallback: return single non-streaming response as SSE
+        results  = store.search(req.question, top_k=settings.rag_top_k)
+        filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
+        answer   = "\n\n".join(f"[{r['start_timestamp']}] {r['raw_text'][:200]}" for r in filtered) \
+                   or "I couldn't find relevant information."
+        def _template_gen():
+            yield f"data: {json.dumps({'type': 'token', 'token': answer})}\n\n"
+            if filtered:
+                yield f"data: {json.dumps({'type': 'sources', 'sources': _format_sources(job_id, filtered)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return StreamingResponse(_template_gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    rag = _make_rag(store)
+    import queue as _queue
+
+    async def _async_gen():
+        q: _queue.Queue = _queue.Queue()
+        loop = asyncio.get_event_loop()
+
+        def _run():
+            try:
+                for ev_type, data in rag.stream_events(req.question, history=req.history or []):
+                    q.put((ev_type, data))
+            except Exception as exc:
+                q.put(("error", str(exc)))
+            finally:
+                q.put(None)  # sentinel
+
+        future = loop.run_in_executor(_executor, _run)
+
+        while True:
+            try:
+                item = await loop.run_in_executor(None, lambda: q.get(timeout=60))
+            except Exception:
+                yield f"data: {json.dumps({'type': 'error', 'error': 'Timeout waiting for LLM'})}\n\n"
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                break
+
+            if item is None:
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                break
+
+            ev_type, data = item
+            if ev_type == "token":
+                yield f"data: {json.dumps({'type': 'token', 'token': data})}\n\n"
+            elif ev_type == "sources":
+                yield f"data: {json.dumps({'type': 'sources', 'sources': _format_sources(job_id, data)})}\n\n"
+            elif ev_type == "clips":
+                yield f"data: {json.dumps({'type': 'clips', 'clips': _format_sources(job_id, data)})}\n\n"
+            elif ev_type == "followups":
+                yield f"data: {json.dumps({'type': 'followups', 'followups': data})}\n\n"
+            elif ev_type == "error":
+                yield f"data: {json.dumps({'type': 'error', 'error': data})}\n\n"
+
+        await future
+
+    return StreamingResponse(
+        _async_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/v1/jobs/{job_id}/chat", tags=["Chat"])
 async def chat(job_id: str, req: ChatRequest):
     job = _get_job_or_404(job_id)
@@ -952,32 +1072,67 @@ async def chat(job_id: str, req: ChatRequest):
 
     rag = _make_rag(store)
 
-    # answer_question now returns (answer, wants_clip) tuple
+    # answer_question returns (answer, wants_clip)
     answer, wants_clip = rag.answer_question(req.question, history=req.history or [])
 
-    # Fetch sources separately for the UI (direct search on the raw question)
+    if wants_clip:
+        # Use the smart hybrid clip-search from the RAG generator directly.
+        # This gives entity-boosted, deduplicated, top-3 results.
+        clip_chunks = rag._find_clip_sources(req.question, top_n=3)
+        return ChatResponse(
+            answer=answer,
+            sources=_format_sources(job_id, clip_chunks),
+            wants_clip=True,
+        )
+
+    # Normal chat: fetch sources by semantic search
     results  = store.search(req.question, top_k=settings.rag_top_k)
     filtered = [r for r in results if r.get("score", 0) >= settings.rag_score_threshold]
+    if not filtered and store._chunks:
+        filtered = store._chunks[:min(3, len(store._chunks))]
 
-    return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered), wants_clip=wants_clip)
+    return ChatResponse(answer=answer, sources=_format_sources(job_id, filtered), wants_clip=False)
 
 
 # ── Video Clips ───────────────────────────────────────────────────────────────
 
 @app.get("/api/v1/jobs/{job_id}/clips/{start_time}/{end_time}", tags=["Clips"])
 async def get_video_clip(job_id: str, start_time: float, end_time: float):
-    job = _get_job_or_404(job_id)
-    video_filename = job.get("filename")
-    if not video_filename:
-        raise HTTPException(status_code=404, detail="Video file not found.")
-    expected_ext = Path(video_filename).suffix
-    video_path   = settings.video_dir / f"{job_id}{expected_ext}"
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk.")
-    clip_path = _clipper.clip_video(str(video_path), start_time=start_time, end_time=end_time, job_id=job_id)
-    if not clip_path:
-        raise HTTPException(status_code=500, detail="Failed to generate video clip.")
-    return {"clip_url": _clipper.get_clip_url(clip_path), "start_time": start_time, "end_time": end_time}
+    try:
+        job = _get_job_or_404(job_id)
+        video_filename = job.get("filename")
+        if not video_filename:
+            raise HTTPException(status_code=404, detail="Video filename not found in job metadata.")
+        
+        expected_ext = Path(video_filename).suffix
+        video_path = settings.video_dir / f"{job_id}{expected_ext}"
+        
+        print(f"\n🎬 CLIP REQUEST:")
+        print(f"  Job: {job_id}")
+        print(f"  Original filename: {video_filename}")
+        print(f"  Expected extension: {expected_ext}")
+        print(f"  Video path: {video_path}")
+        print(f"  Video exists: {video_path.exists()}")
+        print(f"  Time range: {start_time}s - {end_time}s")
+        
+        if not video_path.exists():
+            raise HTTPException(status_code=404, detail=f"Video file not found on disk at {video_path}")
+        
+        clip_path = _clipper.clip_video(str(video_path), start_time=start_time, end_time=end_time, job_id=job_id)
+        if not clip_path:
+            raise HTTPException(status_code=500, detail="FFmpeg failed to generate clip. Check server logs for details.")
+        
+        clip_url = _clipper.get_clip_url(clip_path)
+        print(f"✅ Clip URL: {clip_url}")
+        return {"clip_url": clip_url, "start_time": start_time, "end_time": end_time}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ CLIP ERROR: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Clip generation error: {str(e)}")
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -1024,3 +1179,21 @@ def _format_sources(job_id: str, chunks: List[dict]) -> List[dict]:
         "text": c.get("raw_text", "")[:300], "score": round(c.get("score", 0), 3),
         "clip_url": f"/api/v1/jobs/{job_id}/clips/{c.get('start', 0)}/{c.get('end', 0)}",
     } for c in chunks]
+
+# ── Mount Static Files for React (AFTER all API routes) ─────────────────────────
+# These must be mounted LAST so API routes are checked first
+
+# Mount clips directory
+clips_path = settings.clips_dir
+clips_path.mkdir(parents=True, exist_ok=True)
+app.mount("/clips", StaticFiles(directory=str(clips_path)), name="clips")
+
+# Mount static assets
+static_path = Path(__file__).parent.parent / "frontend" / "build" / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+# Mount React app root (catch-all must be last)
+react_path = Path(__file__).parent.parent / "frontend" / "build"
+if react_path.exists():
+    app.mount("/", StaticFiles(directory=str(react_path), html=True), name="react")

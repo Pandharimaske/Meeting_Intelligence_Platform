@@ -86,7 +86,10 @@ class VideoClipper:
                 str(output_path)
             ]
 
-            print(f"Clipping video: {start_time:.1f}s - {end_time:.1f}s (padded: {padded_start:.1f}s - {padded_end:.1f}s)")
+            print(f"\n📹 CLIPPING VIDEO:")
+            print(f"  Input: {video_path} (exists: {video_path.exists()})")
+            print(f"  Time: {start_time:.1f}s - {end_time:.1f}s (padded: {padded_start:.1f}s - {padded_end:.1f}s)")
+            print(f"  Output: {output_path}")
 
             result = subprocess.run(
                 cmd,
@@ -96,17 +99,22 @@ class VideoClipper:
             )
 
             if result.returncode == 0:
-                print(f"Clip created: {output_path}")
+                print(f"✅ Clip created successfully: {output_path}")
+                print(f"  File size: {output_path.stat().st_size} bytes")
                 return str(output_path)
             else:
-                print(f"FFmpeg failed: {result.stderr}")
+                print(f"❌ FFmpeg failed with code {result.returncode}")
+                print(f"  STDERR: {result.stderr}")
+                print(f"  STDOUT: {result.stdout}")
                 return None
 
         except subprocess.TimeoutExpired:
-            print("FFmpeg timed out")
+            print("❌ FFmpeg timed out after 60 seconds")
             return None
         except Exception as e:
-            print(f"Error clipping video: {e}")
+            print(f"❌ Error clipping video: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_clip_url(self, clip_path: str) -> str:

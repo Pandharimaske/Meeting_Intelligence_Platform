@@ -1,9 +1,9 @@
-import ffmpeg
+import subprocess
 from pathlib import Path
 
 
 class AudioExtractor:
-    """Extract audio from video files using ffmpeg."""
+    """Extract audio from video files using ffmpeg command-line tool."""
 
     def __init__(self, output_dir: str = "data/audio"):
         """
@@ -17,7 +17,7 @@ class AudioExtractor:
 
     def extract_audio(self, video_path: str, output_format: str = "wav") -> str:
         """
-        Extract audio from a video file.
+        Extract audio from a video file using ffmpeg subprocess.
 
         Args:
             video_path: Path to the video file
@@ -40,34 +40,41 @@ class AudioExtractor:
         output_path = self.output_dir / output_name
 
         try:
-            # Probe the file first to check for an audio stream
-            probe = ffmpeg.probe(str(video_path))
-            audio_streams = [s for s in probe['streams'] if s['codec_type'] == 'audio']
-            if not audio_streams:
-                raise RuntimeError(
-                    f"No audio stream found in '{video_path.name}'. "
-                    f"This file is video-only. Please provide the corresponding audio file directly."
-                )
+            # Use ffmpeg command-line to extract audio
+            # -ac 1 = mono, -ar 16000 = 16kHz (required by WhisperX), -acodec pcm_s16le
+            cmd = [
+                "ffmpeg",
+                "-i", str(video_path),
+                "-ac", "1",              # Mono channel
+                "-ar", "16000",          # 16kHz sample rate (required by WhisperX)
+                "-acodec", "pcm_s16le",  # PCM format for compatibility
+                "-y",                    # Overwrite output
+                str(output_path)
+            ]
 
-            # Extract audio using ffmpeg, resample to 16kHz mono (required by Whisper)
-            (
-                ffmpeg
-                .input(str(video_path))
-                .output(
-                    str(output_path),
-                    ac=1,            # Mono channel
-                    ar=16000,        # 16kHz sample rate (required by WhisperX)
-                    acodec='pcm_s16le'
-                )
-                .overwrite_output()
-                .run(capture_stdout=True, capture_stderr=True)
+            print(f"  Extracting audio: {video_path.name} → {output_name}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout for extraction
             )
 
-            print(f"  ✓ Audio extracted successfully: {output_path}")
+            if result.returncode != 0:
+                raise RuntimeError(f"FFmpeg failed: {result.stderr}")
+
+            if not output_path.exists():
+                raise RuntimeError(f"Audio extraction completed but output file not found: {output_path}")
+
+            file_size = output_path.stat().st_size
+            print(f"  ✅ Audio extracted: {output_path} ({file_size:,} bytes)")
             return str(output_path)
 
-        except ffmpeg.Error as e:
-            raise RuntimeError(f"Failed to extract audio from {video_path}: {e.stderr.decode()}")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Audio extraction timed out (exceeded 5 minutes). File may be too large.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract audio: {type(e).__name__}: {e}")
 
 
 def extract_audio_from_video(video_path: str, output_dir: str = "data/audio") -> str:
