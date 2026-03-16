@@ -1,48 +1,6 @@
 # Meeting Intelligence Platform
 
-🗓️ **30-Day Implementation Plan** - **COMPLETED** ✅
-
 A comprehensive AI-powered meeting intelligence system that converts video/audio meetings into searchable, actionable insights with video clip retrieval.
-
----
-
-## 🎯 **Project Status: COMPLETE**
-
-### ✅ **Fully Implemented Features**
-
-#### **Week 1: Media Ingestion & Transcription Foundation** ✅
-- ✅ Video/audio file upload via web interface or API
-- ✅ Audio extraction from video using FFmpeg
-- ✅ Audio preprocessing (16kHz mono WAV)
-- ✅ Whisper ASR transcription with timestamps
-- ✅ Speaker diarization (pyannote.audio)
-- ✅ JSON/TXT transcript storage with speaker labels
-
-#### **Week 2: Semantic Understanding & MoM Generation** ✅
-- ✅ Semantic chunking with contextual metadata
-- ✅ FAISS vector embeddings for semantic search
-- ✅ RAG-based Minutes of Meeting generation
-- ✅ Structured MoM with: Agenda, Key Points, Decisions, Action Items
-- ✅ Timestamped citations in all MoM sections
-
-#### **Week 3: Retrieval, Clipping & User Interaction** ✅
-- ✅ Chat-based query interface with intelligent clip detection
-- ✅ Semantic search over meeting content
-- ✅ **Video clipping with audio-aware padding** (NEW!)
-- ✅ **Inline clip cards embedded in chat flow** (NEW!)
-- ✅ Clickable sources that play exact video segments
-- ✅ Web frontend for upload, chat, and playback
-- ✅ **Text-only responses by default; clips only on explicit request** (NEW!)
-
-#### **Week 4: Polish, Stability & Demo Readiness** ✅
-- ✅ Comprehensive error handling
-- ✅ RESTful API with OpenAPI documentation
-- ✅ Cross-platform compatibility (macOS/Windows)
-- ✅ Modular architecture with clear separation of concerns
-- ✅ Performance optimizations (async processing, caching)
-- ✅ **Enhanced text presentation with markdown formatting** (NEW!)
-- ✅ **Automatic highlighting of important terms** (NEW!)
-- ✅ **Persistent job database + vector store caching** (NEW!)
 
 ---
 
@@ -75,38 +33,6 @@ A comprehensive AI-powered meeting intelligence system that converts video/audio
   - Proper spacing and visual hierarchy
 
 ---
-
-## 📋 **Remaining Improvements** (Future Enhancements)
-
-### **High Priority**
-1. ~~**Gap 1: Word-Level Forced Alignment**~~ ✅ **COMPLETED**
-   - Replaced vanilla Whisper with `WhisperX` for word-level timestamp accuracy
-   - Benefits: Precise video clipping, accurate speaker attribution
-
-2. **Real-time Processing**
-   - Streaming transcription for live meetings
-   - WebRTC integration for browser-based recording
-
-### **Medium Priority**
-3. **Multi-language Support**
-   - Expand beyond English (Hindi, Spanish, etc.)
-   - Language detection and automatic model selection
-
-4. **Advanced Analytics**
-   - Sentiment analysis per speaker
-   - Topic modeling and meeting categorization
-   - Action item deadline tracking
-
-5. **Performance Optimizations**
-   - GPU acceleration for embeddings
-   - Batch processing for multiple files
-   - Caching layer for repeated queries
-
-### **Low Priority**
-6. **Integration Features**
-   - Zoom/Teams/Meet webhook integration
-   - Slack/Discord bot for meeting summaries
-   - Calendar integration for automated recording
 
 ---
 
@@ -189,40 +115,13 @@ open http://localhost:8000
 curl -X POST "http://localhost:8000/api/v1/upload" \
   -F "file=@meeting.mp4"
 
-# Ask a text-only question (default)
+# Ask a question and get AI-powered answer
 curl -X POST "http://localhost:8000/api/v1/jobs/{job_id}/chat" \
   -H "Content-Type: application/json" \
   -d '{"question": "What were the key decisions?"}'
-# Response: {answer: "...", sources: [...], wants_clip: false}
 
-# Ask for a video clip (contains clip-request keywords)
-curl -X POST "http://localhost:8000/api/v1/jobs/{job_id}/chat" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "Show me the budget discussion"}'
-# Response: {answer: "...", sources: [...], wants_clip: true}
-# Client highlights source cards with "Play Clip" buttons
-
-# Get video clips
-curl "http://localhost:8000/api/v1/jobs/{job_id}/clips/10/20"
+# Full API docs available at: http://localhost:8000/docs
 ```
-
-### **Chat Modes**
-
-#### **Mode 1: Text-Only Response (Default)**
-User asks: `"What were the key decisions?"`
-System returns: AI-generated answer with clickable timestamps [HH:MM:SS]
-Display: Clean chat bubble, no sources panel
-Use case: Quick answers, summaries, factual questions
-
-#### **Mode 2: Clip Request (Explicit Keywords)**
-User asks: `"Show me the budget discussion"` or `"Play the part about timeline"`
-System returns: AI answer + **inline clip cards embedded in chat** with:
-- Timestamp range `[HH:MM:SS – HH:MM:SS]`
-- Speaker badge
-- Segment preview text
-- "Play Clip" button (generates + plays video)
-- "Seek" button (jumps to moment in main video)
-- Relevance score
 
 Clip keywords: `show, clip, play, video, segment, watch, see, display, footage, recording, playback, zoom, visual, etc.`
 Use case: Visual context, speaker emphasis, exact wording verification
